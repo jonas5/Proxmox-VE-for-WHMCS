@@ -62,17 +62,44 @@ function pvewhmcs_activate() {
 	$query_count=count($query_array) ;
 	// Iterate through the SQL commands to finalise init.
 	foreach ( $query_array as $query) {
-		if ($i<$query_count-1)
-			if (!Capsule::statement($query.';'))
-		$err=true;
+		if ($i<$query_count-1) {
+            $trimmedQuery = trim($query);
+            if (!empty($trimmedQuery)) { // Ensure query is not empty
+                if (!Capsule::statement($trimmedQuery . ';')) {
+                    $err = true;
+                }
+            }
+        }
 		$i++ ;
 	}
+
+    // After initial setup from db.sql, check and add pool_type column if it doesn't exist
+    if (!$err) {
+        try {
+            $dbName = Capsule::connection()->getDatabaseName();
+            $columnCheck = Capsule::select(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = 'mod_pvewhmcs_ip_pools' AND column_name = 'pool_type'",
+                [$dbName]
+            );
+            if (empty($columnCheck)) {
+                Capsule::statement("ALTER TABLE mod_pvewhmcs_ip_pools ADD COLUMN pool_type VARCHAR(4) NOT NULL DEFAULT 'ipv4'");
+            }
+        } catch (\Exception $e) {
+            // Log error or handle. This prevents fatal errors on re-activation or if permissions are an issue.
+            // For WHMCS, you might use logActivity() if available in this context, or a custom logger.
+            // For simplicity here, we'll note it might cause an error that's suppressed.
+            // In a real scenario, logging this is crucial.
+            $err = true; // Mark as error if this fails, as schema might be inconsistent.
+            $activation_message_description = 'Proxmox VE for WHMCS was partially installed. Error adding pool_type column: ' . $e->getMessage();
+        }
+    }
+
 	// Return success or error.
-	if (!$err)
-		return array('status'=>'success','description'=>'Proxmox VE for WHMCS was installed successfully!');
-
-	return array('status'=>'error','description'=>'Proxmox VE for WHMCS was not activated properly.');
-
+	if (!$err) {
+		return array('status'=>'success','description'=> isset($activation_message_description) ? $activation_message_description : 'Proxmox VE for WHMCS was installed successfully!');
+    } else {
+	    return array('status'=>'error','description'=> isset($activation_message_description) ? $activation_message_description : 'Proxmox VE for WHMCS was not activated properly. Some SQL statements may have failed.');
+    }
 }
 
 // WHMCS MODULE: DEACTIVATION
@@ -128,7 +155,7 @@ function pvewhmcs_output($vars) {
 	<div id="clienttabs">
 	<ul class="nav nav-tabs admin-tabs">
 	<li class="'.($_GET['tab']=="vmplans" ? "active" : "").'"><a id="tabLink1" data-toggle="tab" role="tab" href="#plans">VM/CT Plans</a></li>
-	<li class="'.($_GET['tab']=="ippools" ? "active" : "").'"><a id="tabLink2" data-toggle="tab" role="tab" href="#ippools">IPv4 Pools</a></li>
+	<li class="'.(preg_match("/^ippools/", $_GET['tab']) ? "active" : "").'"><a id="tabLink2" data-toggle="tab" role="tab" href="#ippools">IP Pools</a></li>
 	<li class="'.($_GET['tab']=="nodes" ? "active" : "").'"><a id="tabLink3" data-toggle="tab" role="tab" href="#nodes">Nodes / Cluster</a></li>
 	<li class="'.($_GET['tab']=="actions" ? "active" : "").'"><a id="tabLink4" data-toggle="tab" role="tab" href="#actions">Actions / Logs</a></li>
 	<li class="'.($_GET['tab']=="health" ? "active" : "").'"><a id="tabLink5" data-toggle="tab" role="tab" href="#health">Support / Health</a></li>
@@ -301,39 +328,67 @@ function pvewhmcs_output($vars) {
 	echo '
 	</div>
 	';
+	
+	// Determine current IP pool type from GET params for routing
+	$current_pool_type = '';
+	if (isset($_GET['type']) && ($_GET['type'] == 'ipv4' || $_GET['type'] == 'ipv6')) {
+		$current_pool_type = $_GET['type'];
+	} elseif (isset($_GET['tab']) && ($_GET['tab'] == 'ippools4' || $_GET['tab'] == 'ippools6')) {
+		$current_pool_type = ($_GET['tab'] == 'ippools4' ? 'ipv4' : 'ipv6');
+	}
+
 
 	echo '
-	<div id="ippools" class="tab-pane '.($_GET['tab']=="ippools" ? "active" : "").'" >
-	<div class="btn-group">
-	<a class="btn btn-default" href="'. pvewhmcs_BASEURL .'&amp;tab=ippools&amp;action=list_ip_pools">
-	<i class="fa fa-list"></i>&nbsp; List: IPv4 Pools
-	</a>
-	<a class="btn btn-default" href="'. pvewhmcs_BASEURL .'&amp;tab=ippools&amp;action=newip">
-	<i class="fa fa-plus"></i>&nbsp; Add: IPv4 to Pool
-	</a>
-	</div>
+	<div id="ippools" class="tab-pane '.(preg_match("/^ippools/", $_GET['tab']) ? "active" : "").'" >
+		<div class="btn-group" role="group">
+			<a class="btn btn-default" href="'. pvewhmcs_BASEURL .'&amp;tab=ippools&amp;action=list_ip_pools&amp;type=ipv4">
+				<i class="fa fa-list"></i>&nbsp; Manage IPv4 Pools
+			</a>
+			<a class="btn btn-default" href="'. pvewhmcs_BASEURL .'&amp;tab=ippools&amp;action=list_ip_pools&amp;type=ipv6">
+				<i class="fa fa-list"></i>&nbsp; Manage IPv6 Pools
+			</a>
+		</div>
+		<hr>
 	';
-	if ($_GET['action']=='list_ip_pools') {
-		list_ip_pools() ;
+	
+	// Routing for actions within IP Pools tab
+	if (isset($_GET['action'])) {
+		$action = $_GET['action'];
+		$pool_type_for_action = isset($_GET['type']) ? $_GET['type'] : null; // Explicit type for action
+		
+		// For actions like 'newip', 'list_ips', 'removeip', the pool_id is primary identifier.
+		// The type of IPs within (IPv4/IPv6) is an attribute of the pool itself.
+		// However, 'new_ip_pool' and 'list_ip_pools' are type-specific at creation/listing.
+
+		if ($action == 'list_ip_pools' && $pool_type_for_action) {
+			list_ip_pools($pool_type_for_action);
+		} elseif ($action == 'new_ip_pool') {
+			// If type is not passed directly with new_ip_pool, try to infer from tab or default
+			$type_for_new_pool = $pool_type_for_action ?: ($current_pool_type ?: 'ipv4'); // Default to ipv4 if no context
+			add_ip_pool($type_for_new_pool);
+		} elseif ($action == 'newip') { // Add IP to existing pool
+			// add_ip_2_pool will need to fetch pool_type based on $_POST['pool_id']
+			add_ip_2_pool(); 
+		} elseif ($action == 'removeippool') {
+			removeIpPool($_GET['id']); // removeIpPool doesn't strictly need type, just ID
+		} elseif ($action == 'list_ips') {
+			// list_ips operates on a pool_id. Pool type is an attribute of the pool.
+			list_ips(); 
+		} elseif ($action == 'removeip') {
+			removeip($_GET['id'], $_GET['pool_id']);
+		}
 	}
-	if ($_GET['action']=='new_ip_pool') {
-		add_ip_pool() ;
+
+	if (isset($_POST['newIPpool'])) { // This is the save_ip_pool action
+		save_ip_pool() ; // save_ip_pool will get type from POST
 	}
-	if ($_GET['action']=='newip') {
-		add_ip_2_pool() ;
-	}
-	if (isset($_POST['newIPpool'])) {
-		save_ip_pool() ;
-	}
-	if ($_GET['action']=='removeippool') {
-		removeIpPool($_GET['id']) ;
-	}
-	if ($_GET['action']=='list_ips') {
-		list_ips();
-	}
-	if ($_GET['action']=='removeip') {
-		removeip($_GET['id'],$_GET['pool_id']);
-	}
+	if (isset($_POST['assignIP2pool'])) { // This is the save action for add_ip_2_pool
+        // add_ip_2_pool handles its own POST logic, this check might be redundant if add_ip_2_pool is called above
+        // However, to be safe, ensure it's processed if POST is set.
+        // The function add_ip_2_pool itself contains the POST handling.
+        // No direct call needed here if it's already called via action routing.
+    }
+
 	echo'
 	</div>
 	';
@@ -1475,91 +1530,174 @@ function update_lxc_plan() {
 	header("Location: ".pvewhmcs_BASEURL."&tab=vmplans&action=planlist");
 }
 
-// IP POOLS: List all Pools
-function list_ip_pools() {
-	echo '<a class="btn btn-default" href="'. pvewhmcs_BASEURL .'&amp;tab=ippools&amp;action=new_ip_pool"><i class="fa fa-plus-square"></i>&nbsp; New IPv4 Pool</a>';
-	echo '<table class="datatable"><tr><th>ID</th><th>Pool</th><th>Gateway</th><th>Action</th></tr>';
-	foreach (Capsule::table('mod_pvewhmcs_ip_pools')->get() as $pool) {
-		echo '<tr>';
-		echo '<td>'.$pool->id . PHP_EOL .'</td>';
-		echo '<td>'.$pool->title . PHP_EOL .'</td>';
-		echo '<td>'.$pool->gateway . PHP_EOL .'</td>';
-		echo '<td>
-		<a href="'.pvewhmcs_BASEURL.'&amp;tab=ippools&amp;action=list_ips&amp;id='.$pool->id.'"><img height="16" width="16" border="0" alt="Info" src="images/edit.gif"></a>
-		<a href="'.pvewhmcs_BASEURL.'&amp;tab=ippools&amp;action=removeippool&amp;id='.$pool->id.'" onclick="return confirm(\'Pool and all IPv4 Addresses assigned to it will be deleted, continue?\')"><img height="16" width="16" border="0" alt="Remove" src="images/delete.gif"></a>
-		</td>' ;
-		echo '</tr>' ;
+// IP POOLS: List all Pools by type (ipv4 or ipv6)
+function list_ip_pools($type = 'ipv4') {
+    $poolTypeName = ($type == 'ipv6') ? 'IPv6' : 'IPv4';
+    echo '<h2>Manage ' . $poolTypeName . ' Pools</h2>';
+	echo '<a class="btn btn-primary" href="'. pvewhmcs_BASEURL .'&amp;tab=ippools&amp;action=new_ip_pool&amp;type='.$type.'"><i class="fa fa-plus-square"></i>&nbsp; New ' . $poolTypeName . ' Pool</a>';
+	
+	$pools = Capsule::table('mod_pvewhmcs_ip_pools')->where('pool_type', '=', $type)->get();
+	
+	if (count($pools) == 0) {
+		echo '<p>No ' . $poolTypeName . ' pools found.</p>';
+	} else {
+		echo '<table class="datatable"><tr><th>ID</th><th>Pool Name</th><th>Gateway</th><th>Type</th><th>Action</th></tr>';
+		foreach ($pools as $pool) {
+			echo '<tr>';
+			echo '<td>'.$pool->id . PHP_EOL .'</td>';
+			echo '<td>'.htmlspecialchars($pool->title) . PHP_EOL .'</td>';
+			echo '<td>'.htmlspecialchars($pool->gateway) . PHP_EOL .'</td>';
+			echo '<td>'.strtoupper($pool->pool_type) . PHP_EOL .'</td>';
+			echo '<td>
+			<a href="'.pvewhmcs_BASEURL.'&amp;tab=ippools&amp;action=list_ips&amp;id='.$pool->id.'&amp;type='.$type.'"><img height="16" width="16" border="0" alt="List IPs" src="images/info.png"> List IPs</a>&nbsp;
+			<a href="'.pvewhmcs_BASEURL.'&amp;tab=ippools&amp;action=removeippool&amp;id='.$pool->id.'&amp;type='.$type.'" onclick="return confirm(\'Pool and all IP Addresses assigned to it will be deleted, continue?\')"><img height="16" width="16" border="0" alt="Remove" src="images/delete.gif"></a>
+			</td>' ;
+			echo '</tr>' ;
+		}
+		echo '</table>';
 	}
-	echo '</table>';
 }
 
-// IP POOL FORM: Add IP Pool
-function add_ip_pool() {
+// IP POOL FORM: Add IP Pool (for a specific type)
+function add_ip_pool($type = 'ipv4') {
+    $poolTypeName = ($type == 'ipv6') ? 'IPv6' : 'IPv4';
+    echo '<h2>Add New ' . $poolTypeName . ' Pool</h2>';
 	echo '
 	<form method="post">
+	<input type="hidden" name="pool_type" value="'.htmlspecialchars($type).'">
 	<table class="form" border="0" cellpadding="3" cellspacing="1" width="100%">
 	<tr>
 	<td class="fieldlabel">Pool Title</td>
 	<td class="fieldarea">
 	<input type="text" size="35" name="title" id="title" required>
 	</td>
-	<td class="fieldlabel">IPv4 Gateway</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Gateway Address</td>
 	<td class="fieldarea">
 	<input type="text" size="25" name="gateway" id="gateway" required>
-	Gateway address of the pool
+	Enter a valid ' . $poolTypeName . ' gateway address.
 	</td>
 	</tr>
 	</table>
-	<input type="submit" class="btn btn-primary" name="newIPpool" value="Save"/>
+	<input type="submit" class="btn btn-primary" name="newIPpool" value="Save Pool"/>
 	</form>
 	';
 }
 
 // IP POOL FORM ACTION: Save Pool
 function save_ip_pool() {
+    $title = $_POST['title'];
+    $gateway = trim($_POST['gateway']);
+    $pool_type = $_POST['pool_type']; // 'ipv4' or 'ipv6'
+
+    // Validation
+    $isValidGateway = false;
+    if ($pool_type == 'ipv4') {
+        $isValidGateway = filter_var($gateway, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+    } elseif ($pool_type == 'ipv6') {
+        $isValidGateway = filter_var($gateway, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+    }
+
+    if (!$isValidGateway) {
+        $_SESSION['pvewhmcs']['infomsg']['title'] = 'Error Saving IP Pool';
+        $_SESSION['pvewhmcs']['infomsg']['message'] = 'Invalid ' . strtoupper($pool_type) . ' gateway address provided: ' . htmlspecialchars($gateway);
+        header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=new_ip_pool&type=".$pool_type);
+        exit;
+    }
+
 	try {
 		Capsule::connection()->transaction(
-			function ($connectionManager)
+			function ($connectionManager) use ($title, $gateway, $pool_type)
 			{
 				/** @var \Illuminate\Database\Connection $connectionManager */
 				$connectionManager->table('mod_pvewhmcs_ip_pools')->insert(
 					[
-						'title' => $_POST['title'],
-						'gateway' => $_POST['gateway'],
+						'title' => $title,
+						'gateway' => $gateway,
+                        'pool_type' => $pool_type,
 					]
 				);
 			}
 		);
-		$_SESSION['pvewhmcs']['infomsg']['title']='New IPv4 Pool added.' ;
-		$_SESSION['pvewhmcs']['infomsg']['message']='New IPv4 Pool saved successfully.' ;
-		header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ip_pools");
+		$_SESSION['pvewhmcs']['infomsg']['title']='New ' . strtoupper($pool_type) . ' IP Pool added.' ;
+		$_SESSION['pvewhmcs']['infomsg']['message']='New ' . strtoupper($pool_type) . ' IP Pool saved successfully.' ;
+		header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ip_pools&type=".$pool_type);
+        exit;
 	} catch (\Exception $e) {
-		echo "Uh oh! Inserting didn't work, but I was able to rollback. {$e->getMessage()}";
+        $_SESSION['pvewhmcs']['infomsg']['title'] = 'Error Saving IP Pool';
+		$_SESSION['pvewhmcs']['infomsg']['message'] = "Uh oh! Inserting didn't work. {$e->getMessage()}";
+        header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=new_ip_pool&type=".$pool_type);
+        exit;
 	}
 }
 
 // IP POOL FORM ACTION: Remove Pool
 function removeIpPool($id) {
+    // Before deleting the pool, get its type to redirect correctly
+    $pool = Capsule::table('mod_pvewhmcs_ip_pools')->where('id', '=', $id)->first();
+    $pool_type_for_redirect = $pool ? $pool->pool_type : 'ipv4'; // Default redirect if pool not found
+
 	Capsule::table('mod_pvewhmcs_ip_addresses')->where('pool_id', '=', $id)->delete();
 	Capsule::table('mod_pvewhmcs_ip_pools')->where('id', '=', $id)->delete();
 
-	header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ip_pools");
-	$_SESSION['pvewhmcs']['infomsg']['title']='IPv4 Pool Deleted.' ;
-	$_SESSION['pvewhmcs']['infomsg']['message']='Deleted the IPv4 Pool successfully.' ;
+	$_SESSION['pvewhmcs']['infomsg']['title']='IP Pool Deleted.' ;
+	$_SESSION['pvewhmcs']['infomsg']['message']='Deleted the IP Pool successfully.' ;
+	header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ip_pools&type=".$pool_type_for_redirect);
+    exit;
 }
 
 // IP POOL FORM ACTION: Add IP to Pool
+// This function will need significant changes to handle pool_type for validation
+// and to select the correct IP parsing libraries.
 function add_ip_2_pool() {
+    // Determine pool type from the selected pool_id
+    $pool_id_for_adding = isset($_POST['pool_id']) ? $_POST['pool_id'] : (isset($_GET['pool_id']) ? $_GET['pool_id'] : null);
+    $current_pool = null;
+    if ($pool_id_for_adding) {
+        $current_pool = Capsule::table('mod_pvewhmcs_ip_pools')->where('id', '=', $pool_id_for_adding)->first();
+    }
+    $pool_type_of_current_pool = $current_pool ? $current_pool->pool_type : null;
+
+
 	require_once(ROOTDIR.'/modules/addons/pvewhmcs/Ipv4/Subnet.php');
-	echo '<form method="post">
+	require_once(ROOTDIR.'/modules/addons/pvewhmcs/Ipv6/Address.php');
+	require_once(ROOTDIR.'/modules/addons/pvewhmcs/Ipv6/Subnet.php');
+	require_once(ROOTDIR.'/modules/addons/pvewhmcs/Ipv6/SubnetIterator.php');
+
+    // Fetch pools based on type for the dropdown, or all if type isn't determined yet for the form.
+    // For now, let's assume the form will be presented in context of a pool type or allow selection.
+    // If this form is reached via "Add IP to this Pool" on a specific pool's IP list page,
+    // then pool_id would be in GET.
+    
+    $gateways = []; // Reset gateways for this scope
+    $pools_for_dropdown = [];
+    if ($pool_type_of_current_pool) { // If we know the pool type (e.g. adding to a specific pool)
+        $pools_for_dropdown = Capsule::table('mod_pvewhmcs_ip_pools')->where('pool_type', '=', $pool_type_of_current_pool)->get();
+        if ($pool_id_for_adding && !$current_pool) { // If a pool_id was given but not found
+             echo '<div class="errorbox">Error: The specified pool (ID: '.htmlspecialchars($pool_id_for_adding).') was not found or does not match the expected type.</div>';
+             return;
+        }
+    } else { // Fallback: show all pools if type context is missing (less ideal)
+        $pools_for_dropdown = Capsule::table('mod_pvewhmcs_ip_pools')->get();
+    }
+
+
+	echo '<form method="post" action="'.pvewhmcs_BASEURL.'&amp;tab=ippools&amp;action=newip">'; // Ensure action points correctly
+    if ($pool_id_for_adding) {
+        echo '<input type="hidden" name="pool_id_for_add" value="'.htmlspecialchars($pool_id_for_adding).'">';
+    }
+	echo '
 	<table class="form" border="0" cellpadding="3" cellspacing="1" width="100%">
 	<tr>
 	<td class="fieldlabel">IP Pool</td>
 	<td class="fieldarea">
 	<select class="form-control select-inline" name="pool_id">';
-	foreach (Capsule::table('mod_pvewhmcs_ip_pools')->get() as $pool) {
-		echo '<option value="'.$pool->id.'">'.$pool->title.'</option>';
-		$gateways[]=$pool->gateway ;
+	foreach ($pools_for_dropdown as $pool) {
+        $selected = ($pool->id == $pool_id_for_adding) ? 'selected' : '';
+		echo '<option value="'.$pool->id.'" '.$selected.'>'.htmlspecialchars($pool->title).' ('.strtoupper($pool->pool_type).')</option>';
+		// Populate gateways array only for selected pool type if possible, or all for now
+        $gateways[]=$pool->gateway; 
 	}
 	echo '</select>
 	</td>
@@ -1568,68 +1706,162 @@ function add_ip_2_pool() {
 	<td class="fieldlabel">IP Block</td>
 	<td class="fieldarea">
 	<input type="text" name="ipblock"/>
-	IP Block with CIDR e.g. 172.16.255.230/27, or for single IP address don\'t use CIDR
+	IP Block with CIDR e.g. 172.16.255.230/27 or 2001:db8::/48. For single IP, CIDR is optional (IPv4 assumes /32, IPv6 assumes /128).
 	</td>
 	</tr>
 	</table>
 	<input type="submit" name="assignIP2pool" value="Save"/>
 	</form>';
 	if (isset($_POST['assignIP2pool'])) {
-			// check if single IP address
-		if ((strpos($_POST['ipblock'],'/'))!=false) {
-			$subnet=Ipv4_Subnet::fromString($_POST['ipblock']);
-			$ips = $subnet->getIterator();
-			foreach($ips as $ip) {
-				if (!in_array($ip, $gateways)) {
-					Capsule::table('mod_pvewhmcs_ip_addresses')->insert(
-						[
-							'pool_id' => $_POST['pool_id'],
-							'ipaddress' => $ip,
-							'mask' => $subnet->getNetmask(),
-						]
-					);
+		$ipblock = trim($_POST['ipblock']);
+		$pool_id = $_POST['pool_id'];
+		$successMessageTitle = 'IP Address/Blocks added to Pool.';
+		$successMessage = 'You can remove IP Addresses from the pool.';
+		$errorMessageTitle = 'Error adding IP Block';
+		$errorMessage = '';
+
+		try {
+            // Retrieve the pool to determine its type for validation
+            $pool_to_add_to = Capsule::table('mod_pvewhmcs_ip_pools')->where('id', '=', $pool_id)->first();
+            if (!$pool_to_add_to) {
+                throw new \Exception("Selected IP Pool (ID: $pool_id) not found.");
+            }
+            $pool_type = $pool_to_add_to->pool_type;
+            $current_pool_gateway = $pool_to_add_to->gateway;
+
+            // Determine IP block version
+            $isIPv6Block = str_contains($ipblock, ':');
+
+            // Explicit validation against pool type
+            if ($pool_type == 'ipv4' && $isIPv6Block) {
+                $_SESSION['pvewhmcs']['infomsg']['title'] = $errorMessageTitle;
+                $_SESSION['pvewhmcs']['infomsg']['message'] = 'Validation Error: Cannot add an IPv6 block to an IPv4 pool.';
+                header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=newip&pool_id=".$pool_id."&type=ipv4");
+                exit;
+            }
+            if ($pool_type == 'ipv6' && !$isIPv6Block) {
+                $_SESSION['pvewhmcs']['infomsg']['title'] = $errorMessageTitle;
+                $_SESSION['pvewhmcs']['infomsg']['message'] = 'Validation Error: Cannot add an IPv4 block to an IPv6 pool.';
+                header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=newip&pool_id=".$pool_id."&type=ipv6");
+                exit;
+            }
+
+            // Proceed with parsing and adding if validation passes
+			if ($pool_type == 'ipv6') { // This implies $isIPv6Block is true due to above validation
+				if (!str_contains($ipblock, '/')) {
+					$ipblock .= '/128';
 				}
+				$subnet = \PveWhmcs\Ipv6\Subnet::fromString($ipblock);
+				$iterator = new \PveWhmcs\Ipv6\SubnetIterator($subnet);
+				$prefix = $subnet->getPrefix();
+
+				foreach ($iterator as $ipAddress) {
+					$ipString = $ipAddress->toString();
+					if ($ipString != $current_pool_gateway) { 
+						Capsule::table('mod_pvewhmcs_ip_addresses')->insert(
+							[
+								'pool_id' => $pool_id,
+								'ipaddress' => $ipString,
+								'mask' => $prefix, // Store prefix for IPv6
+							]
+						);
+					}
+				}
+				$successMessageTitle = 'IPv6 Address/Blocks added to Pool.';
+			} else { // This implies $pool_type is 'ipv4' and $isIPv6Block is false
+				if (!str_contains($ipblock, '/')) {
+					if ($ipblock != $current_pool_gateway) {
+						Capsule::table('mod_pvewhmcs_ip_addresses')->insert(
+							[
+								'pool_id' => $pool_id,
+								'ipaddress' => $ipblock,
+								'mask' => '255.255.255.255', 
+							]
+						);
+					}
+				} else {
+					$subnet = Ipv4_Subnet::fromString($ipblock);
+					$ips = $subnet->getIterator();
+					foreach ($ips as $ip) {
+						if ($ip != $current_pool_gateway) {
+							Capsule::table('mod_pvewhmcs_ip_addresses')->insert(
+								[
+									'pool_id' => $pool_id,
+									'ipaddress' => $ip,
+									'mask' => $subnet->getNetmask(),
+								]
+							);
+						}
+					}
+				}
+				$successMessageTitle = 'IPv4 Address/Blocks added to Pool.';
 			}
+			$_SESSION['pvewhmcs']['infomsg']['title'] = $successMessageTitle;
+			$_SESSION['pvewhmcs']['infomsg']['message'] = $successMessage;
+
+		} catch (\Exception $e) {
+			$_SESSION['pvewhmcs']['infomsg']['title'] = $errorMessageTitle;
+			$_SESSION['pvewhmcs']['infomsg']['message'] = 'Failed to add IP block: ' . $e->getMessage();
 		}
-		else {
-			if (!in_array($_POST['ipblock'], $gateways)) {
-				Capsule::table('mod_pvewhmcs_ip_addresses')->insert(
-					[
-						'pool_id' => $_POST['pool_id'],
-						'ipaddress' => $_POST['ipblock'],
-						'mask' => '255.255.255.255',
-					]
-				);
-			}
-		}
-		header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ips&id=".$_POST['pool_id']);
-		$_SESSION['pvewhmcs']['infomsg']['title']='IPv4 Address/Blocks added to Pool.' ;
-		$_SESSION['pvewhmcs']['infomsg']['message']='You can remove IPv4 Addresses from the pool.' ;
+        // Redirect back to the list of IPs for the specific pool
+		header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ips&id=".$pool_id."&type=".($pool_type ?: 'ipv4'));
+		exit; 
 	}
 }
 
 // IP POOL FORM: List IPs in Pool
 function list_ips() {
-		//echo '<script>$(function() {$( "#dialog" ).dialog();});</script>' ;
-		//echo '<div id="dialog">' ;
-	echo '<table class="datatable"><tr><th>IP Address</th><th>Subnet Mask</th><th>Action</th></tr>' ;
-	foreach (Capsule::table('mod_pvewhmcs_ip_addresses')->where('pool_id', '=', $_GET['id'])->get() as $ip) {
-		echo '<tr><td>'.$ip->ipaddress.'</td><td>'.$ip->mask.'</td><td>';
-		if (count(Capsule::table('mod_pvewhmcs_vms')->where('ipaddress','=',$ip->ipaddress)->get())>0)
-			echo 'is in use' ;
-		else
-			echo '<a href="'.pvewhmcs_BASEURL.'&amp;tab=ippools&amp;action=removeip&amp;pool_id='.$ip->pool_id.'&amp;id='.$ip->id.'" onclick="return confirm(\'IPv4 Address will be deleted from the pool, continue?\')"><img height="16" width="16" border="0" alt="Edit" src="images/delete.gif"></a>';
-		echo '</td></tr>';
-	}
-	echo '</table>' ;
+    $pool_id = $_GET['id'];
+    $pool = Capsule::table('mod_pvewhmcs_ip_pools')->where('id', '=', $pool_id)->first();
 
+    if (!$pool) {
+        echo '<div class="errorbox">Error: IP Pool not found.</div>';
+        return;
+    }
+    $pool_type = $pool->pool_type;
+    $poolTypeName = ($pool_type == 'ipv6') ? 'IPv6' : 'IPv4';
+
+    echo '<h2>IP Addresses in Pool: ' . htmlspecialchars($pool->title) . ' (' . $poolTypeName . ')</h2>';
+    // Link to add IPs to *this* specific pool
+    echo '<a class="btn btn-primary" href="'. pvewhmcs_BASEURL .'&amp;tab=ippools&amp;action=newip&amp;pool_id='.$pool_id.'&amp;type='.$pool_type.'"><i class="fa fa-plus"></i>&nbsp; Add IP(s) to this ' . $poolTypeName . ' Pool</a>';
+
+
+	echo '<table class="datatable"><tr><th>IP Address</th><th>Subnet Mask/Prefix</th><th>Action</th></tr>' ;
+	$ips_in_pool = Capsule::table('mod_pvewhmcs_ip_addresses')->where('pool_id', '=', $pool_id)->get();
+
+    if (count($ips_in_pool) == 0) {
+        echo '<tr><td colspan="3">No IP addresses found in this pool.</td></tr>';
+    } else {
+        foreach ($ips_in_pool as $ip) {
+            $displayIp = htmlspecialchars($ip->ipaddress);
+            $displayMaskOrPrefix = htmlspecialchars($ip->mask);
+            
+            if ($pool_type == 'ipv6') { // For IPv6, mask is the prefix
+                $displayIp .= '/' . $displayMaskOrPrefix;
+                $displayMaskOrPrefix = ''; // Clear if shown with IP, or adjust as needed
+            }
+            
+            echo '<tr><td>'.$displayIp.'</td><td>'.$displayMaskOrPrefix.'</td><td>';
+            if (count(Capsule::table('mod_pvewhmcs_vms')->where('ipaddress','=',$ip->ipaddress)->get())>0)
+                echo 'In use' ;
+            else
+                echo '<a href="'.pvewhmcs_BASEURL.'&amp;tab=ippools&amp;action=removeip&amp;pool_id='.$ip->pool_id.'&amp;id='.$ip->id.'&amp;type='.$pool_type.'" onclick="return confirm(\'IP Address will be deleted from the pool, continue?\')"><img height="16" width="16" border="0" alt="Remove IP" src="images/delete.gif"></a>';
+            echo '</td></tr>';
+        }
+    }
+	echo '</table>' ;
 }
 
 // IP POOL FORM ACTION: Remove IP from Pool
-function removeip($id,$pool_id) {
+function removeip($id, $pool_id) {
+    // Get pool type for redirect
+    $pool = Capsule::table('mod_pvewhmcs_ip_pools')->where('id', '=', $pool_id)->first();
+    $pool_type_for_redirect = $pool ? $pool->pool_type : (isset($_GET['type']) ? $_GET['type'] : 'ipv4');
+
 	Capsule::table('mod_pvewhmcs_ip_addresses')->where('id', '=', $id)->delete();
-	header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ips&id=".$pool_id);
-	$_SESSION['pvewhmcs']['infomsg']['title']='IPv4 Address deleted.' ;
+	$_SESSION['pvewhmcs']['infomsg']['title']='IP Address deleted.' ;
 	$_SESSION['pvewhmcs']['infomsg']['message']='Deleted selected item successfully.' ;
+	header("Location: ".pvewhmcs_BASEURL."&tab=ippools&action=list_ips&id=".$pool_id."&type=".$pool_type_for_redirect);
+    exit;
 }
 ?>

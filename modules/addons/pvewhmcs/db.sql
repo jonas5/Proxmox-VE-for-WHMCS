@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS `mod_pvewhmcs_ip_pools` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `title` varchar(255) NOT NULL,
   `gateway` varchar(100) DEFAULT NULL,
+  `pool_type` VARCHAR(4) NOT NULL DEFAULT 'ipv4',
   PRIMARY KEY (`id`)
 );
 CREATE TABLE IF NOT EXISTS `mod_pvewhmcs_plans` (

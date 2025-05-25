@@ -59,6 +59,15 @@
 		<tr>
 			<td><strong>IP</strong> (Addressing)</td><td><strong>{$vm_config['ipv4']}</strong><br/>Subnet Mask:&nbsp;{$vm_config['netmask4']}<br/>Gateway:&nbsp;{$vm_config['gateway4']}</td>
 		</tr>
+        {if $vm_config.ipv6}
+            <tr>
+                <td><strong>IPv6</strong> (Addressing)</td>
+                <td>
+                    <strong>{$vm_config.ipv6}</strong>{if $vm_config.ipv6mask}/{$vm_config.ipv6mask}{/if}<br/>
+                    {if $vm_config.ipv6gateway}Gateway:&nbsp;{$vm_config.ipv6gateway}{/if}
+                </td>
+            </tr>
+        {/if}
 		<tr>
 			<td><strong>OS/etc</strong> (System)</td>
 			<td>Kernel:&nbsp;{$vm_config['ostype']}</td>

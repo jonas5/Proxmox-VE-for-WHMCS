@@ -44,9 +44,21 @@ function pvewhmcs_ConfigOptions() {
 	}
 
 	// Retrieve IP Pools
-	foreach (Capsule::table('mod_pvewhmcs_ip_pools')->get() as $ippool) {
-		$ippools[$ippool->id]=$ippool->title ;
+    $ipv4pools = [0 => 'None (default)']; // Start with a None option
+	foreach (Capsule::table('mod_pvewhmcs_ip_pools')->where('pool_type', '=', 'ipv4')->get() as $ippool) {
+		$ipv4pools[$ippool->id] = $ippool->title . ' (IPv4)';
 	}
+    if (count($ipv4pools) == 1) { // Only "None" was added
+        $ipv4pools[0] = 'No IPv4 Pools available';
+    }
+
+    $ipv6pools = [0 => 'None (default)']; // Start with a None option for IPv6
+    foreach (Capsule::table('mod_pvewhmcs_ip_pools')->where('pool_type', '=', 'ipv6')->get() as $ippool) {
+		$ipv6pools[$ippool->id] = $ippool->title . ' (IPv6)';
+	}
+    if (count($ipv6pools) == 1) { // Only "None" was added
+        $ipv6pools[0] = 'No IPv6 Pools available';
+    }
 	
 	/*
 	$proxmox = new PVE2_API($server->ipaddress, $server->username, "pam", get_server_pass_from_whmcs($server->password));
@@ -76,12 +88,18 @@ function pvewhmcs_ConfigOptions() {
 			'Options' => $plans ,
 			"Description" => "QEMU/LXC : Plan Name"
 		),
-		"IPPool" => array(
+		"IPPool" => array( // configoption2
 			"FriendlyName" => "IPv4 Pool",
 			"Type" => "dropdown",
-			'Options'=> $ippools,
+			'Options'=> $ipv4pools,
 			"Description" => "IPv4 : Allocation Pool"
 		),
+        "IPv6Pool" => array( // configoption3
+            "FriendlyName" => "IPv6 Pool",
+            "Type" => "dropdown",
+            "Options" => $ipv6pools,
+            "Description" => "IPv6 : Allocation Pool (Optional - select 'None' if not required)",
+        ),
 	);
 
 	// Deliver the options back into WHMCS
@@ -91,15 +109,16 @@ function pvewhmcs_ConfigOptions() {
 // PVE API FUNCTION: Create the Service on the Hypervisor
 function pvewhmcs_CreateAccount($params) {
 	// Make sure "WHMCS Admin > Products/Services > Proxmox-based Service -> Plan + Pool" are set. Else, fail early. (Issue #36)
-	if (!isset($params['configoption1'], $params['configoption2'])) {
-		throw new Exception("PVEWHMCS Error: Missing Config. Service/Product WHMCS Config not saved (Plan/Pool not assigned to WHMCS Service type). Check Support/Health tab in Module Config for info. Quick and easy fix.");
+    // configoption1 = Plan, configoption2 = IPv4 Pool, configoption3 = IPv6 Pool
+	if (!isset($params['configoption1']) || empty($params['configoption1'])) {
+		throw new Exception("PVEWHMCS Error: Missing PVE Plan. Service/Product WHMCS Config not saved (Plan not assigned to WHMCS Service type).");
 	}
-	if (empty($params['configoption1'])) {
-		throw new Exception("PVEWHMCS Error: Missing Config. Service/Product WHMCS Config not saved (Plan/Pool not assigned to WHMCS Service type). Check Support/Health tab in Module Config for info. Quick and easy fix.");
+    // IPv4 Pool (configoption2) is mandatory for now (can be 'None' if no IPv4 pools are available or explicitly chosen)
+	if (!isset($params['configoption2'])) { 
+		throw new Exception("PVEWHMCS Error: Missing IPv4 Pool configuration. Please select an IPv4 Pool or 'None'.");
 	}
-	if (empty($params['configoption2'])) {
-		throw new Exception("PVEWHMCS Error: Missing Config. Service/Product WHMCS Config not saved (Plan/Pool not assigned to WHMCS Service type). Check Support/Health tab in Module Config for info. Quick and easy fix.");
-	}
+    // IPv6 Pool (configoption3) is optional, so we check if it's set before using it.
+    // No exception if $params['configoption3'] is not set or is '0' (None).
 
 	// Retrieve Plan from table
 	$plan = Capsule::table('mod_pvewhmcs_plans')->where('id', '=', $params['configoption1'])->get()[0];
@@ -111,9 +130,51 @@ function pvewhmcs_CreateAccount($params) {
 
 	// Prepare the service config array
 	$vm_settings = array();
+    $ipv4_addr = null;
+    $ipv4_mask = null;
+    $ipv4_gw = null;
+    $ipv6_addr = null;
+    $ipv6_prefix = null;
+    $ipv6_gw = null;
 
-	// Select an IP Address from Pool
-	$ip = Capsule::select('select ipaddress,mask,gateway from mod_pvewhmcs_ip_addresses i INNER JOIN mod_pvewhmcs_ip_pools p on (i.pool_id=p.id and p.id=' . $params['configoption2'] . ') where  i.ipaddress not in(select ipaddress from mod_pvewhmcs_vms) limit 1')[0];
+	// Select an IPv4 Address from Pool if an IPv4 pool is selected
+    if (isset($params['configoption2']) && $params['configoption2'] != '0') {
+        $ip_query_v4 = 'select i.ipaddress, i.mask, p.gateway from mod_pvewhmcs_ip_addresses i INNER JOIN mod_pvewhmcs_ip_pools p on (i.pool_id=p.id and p.id=' . $params['configoption2'] . " AND p.pool_type='ipv4'" . ') where i.ipaddress not in (select ipaddress from mod_pvewhmcs_vms where ipaddress IS NOT NULL) limit 1';
+        $ipv4_details_array = Capsule::select($ip_query_v4);
+        if (!empty($ipv4_details_array)) {
+            $ipv4_details = $ipv4_details_array[0];
+            $ipv4_addr = $ipv4_details->ipaddress;
+            $ipv4_mask = $ipv4_details->mask;
+            $ipv4_gw = $ipv4_details->gateway;
+        } else {
+            throw new Exception("PVEWHMCS Error: No available IPv4 addresses in the selected IPv4 pool.");
+        }
+    }
+
+    // Select an IPv6 Address from Pool if an IPv6 pool is selected
+    if (isset($params['configoption3']) && $params['configoption3'] != '0') {
+        $ip_query_v6 = 'select i.ipaddress, i.mask, p.gateway from mod_pvewhmcs_ip_addresses i INNER JOIN mod_pvewhmcs_ip_pools p on (i.pool_id=p.id and p.id=' . $params['configoption3'] . " AND p.pool_type='ipv6'" . ') where i.ipaddress not in (select ipv6_address from mod_pvewhmcs_vms where ipv6_address IS NOT NULL) limit 1';
+        $ipv6_details_array = Capsule::select($ip_query_v6);
+         if (!empty($ipv6_details_array)) {
+            $ipv6_details = $ipv6_details_array[0];
+            $ipv6_addr = $ipv6_details->ipaddress;
+            $ipv6_prefix = $ipv6_details->mask; // Stored as prefix in DB for IPv6
+            $ipv6_gw = $ipv6_details->gateway;
+        } else {
+            throw new Exception("PVEWHMCS Error: No available IPv6 addresses in the selected IPv6 pool.");
+        }
+    }
+    
+    // At least one IP type must be configured if pools were selected
+    if (($params['configoption2'] != '0' && !$ipv4_addr) && ($params['configoption3'] != '0' && !$ipv6_addr)) {
+        // This case should ideally be caught by the specific "no available IPs" errors above.
+        // If a pool was selected (not '0') but no IP was fetched, it's an issue.
+        // If both were '0', then it's fine (no IP assignment needed from pools).
+        if($params['configoption2'] != '0' || $params['configoption3'] != '0'){
+             throw new Exception("PVEWHMCS Error: IP address assignment failed. No IP address could be obtained from the selected pool(s).");
+        }
+    }
+
 
 	////////////////////////
 	// CREATE IF QEMU/KVM //
@@ -184,11 +245,14 @@ function pvewhmcs_CreateAccount($params) {
 						'id' => $params['serviceid'],
 						'user_id' => $params['clientsdetails']['userid'],
 						'vtype' => 'qemu',
-						'ipaddress' => $ip->ipaddress,
-						'subnetmask' => $ip->mask,
-						'gateway' => $ip->gateway,
+						'ipaddress' => $ipv4_addr,
+						'subnetmask' => $ipv4_mask,
+						'gateway' => $ipv4_gw,
+                        'ipv6_address' => $ipv6_addr,
+                        'ipv6_mask' => $ipv6_prefix,
+                        'ipv6_gateway' => $ipv6_gw,
 						'created' => date("Y-m-d H:i:s"),
-						'v6prefix' => $plan->ipv6,
+						'v6prefix' => $plan->ipv6, // This seems to be for plan-level IPv6 config, distinct from assigned IP
 					]
 				);
 				// ISSUE #32 relates - amend post-clone to ensure excludes-disk amendments are all done, too.
@@ -220,35 +284,58 @@ function pvewhmcs_CreateAccount($params) {
 			$vm_settings['swap'] = $plan->swap;
 			$vm_settings['rootfs'] = $plan->storage . ':' . $plan->disk;
 			$vm_settings['bwlimit'] = $plan->diskio;
-			$vm_settings['nameserver'] = '1.1.1.1 1.0.0.1';
-			$vm_settings['net0'] = 'name=eth0,bridge=' . $plan->bridge . $plan->vmbr . ',ip=' . $ip->ipaddress . '/' . mask2cidr($ip->mask) . ',gw=' . $ip->gateway . ',rate=' . $plan->netrate;
-			if (!empty($plan->ipv6) && $plan->ipv6 != '0') {
-				// Standard prep for the 2nd int.
-				$vm_settings['net1'] = 'name=eth1,bridge=' . $plan->bridge . $plan->vmbr . ',rate=' . $plan->netrate;
-				switch ($plan->ipv6) {
-					case 'auto':
-						// Pass in auto, triggering SLAAC
-						$vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
-						$vm_settings['net1'] .= ',ip6=auto';
-						break;
-					case 'dhcp':
-						// DHCP for IPv6 option
-						$vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
-						$vm_settings['net1'] .= ',ip6=dhcp';
-						break;
-					case 'prefix':
-						// Future development
-						break;
-					default:
-						break;
-				}
-				if (!empty($plan->vlanid)) {
-					$vm_settings['net1'] .= ',trunk=' . $plan->vlanid;
-				}
-			}
-			if (!empty($plan->vlanid)) {
-				$vm_settings['net0'] .= ',trunk=' . $plan->vlanid;
-			}
+			$vm_settings['nameserver'] = '1.1.1.1 1.0.0.1'; // Default DNS
+            
+            if ($ipv4_addr) {
+			    $vm_settings['net0'] = 'name=eth0,bridge=' . $plan->bridge . $plan->vmbr . ',ip=' . $ipv4_addr . '/' . mask2cidr($ipv4_mask) . ',gw=' . $ipv4_gw . ',rate=' . $plan->netrate;
+                if (!empty($plan->vlanid)) {
+                    $vm_settings['net0'] .= ',tag=' . $plan->vlanid; // Proxmox uses 'tag' for VLAN ID on bridge
+                }
+            }
+
+            // IPv6 Configuration for LXC (net1 or append to net0 if no IPv4)
+            $lxc_ipv6_interface_index = $ipv4_addr ? 'net1' : 'net0'; // Use net1 if net0 is for IPv4, else use net0
+
+            if ($ipv6_addr) { // Assigned IPv6 from pool
+                $current_net_setting = 'name=' . ($lxc_ipv6_interface_index == 'net1' ? 'eth1' : 'eth0');
+                $current_net_setting .= ',bridge=' . $plan->bridge . $plan->vmbr;
+                $current_net_setting .= ',ip6=' . $ipv6_addr . '/' . $ipv6_prefix;
+                if ($ipv6_gw) {
+                    $current_net_setting .= ',gw6=' . $ipv6_gw;
+                }
+                if (!empty($plan->netrate)) {
+                     $current_net_setting .= ',rate=' . $plan->netrate;
+                }
+                 if (!empty($plan->vlanid)) { // Apply VLAN tag if specified
+                    $current_net_setting .= ',tag=' . $plan->vlanid;
+                }
+                $vm_settings[$lxc_ipv6_interface_index] = $current_net_setting;
+                $vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001'; // Add IPv6 DNS
+            } elseif (!empty($plan->ipv6) && $plan->ipv6 != '0' && $plan->ipv6 != 'prefix') { 
+                // Plan-level IPv6 config (SLAAC/DHCPv6), only if no specific IP assigned and not 'prefix'
+                $current_net_setting = 'name=' . ($lxc_ipv6_interface_index == 'net1' ? 'eth1' : 'eth0');
+                $current_net_setting .= ',bridge=' . $plan->bridge . $plan->vmbr;
+                 if (!empty($plan->netrate)) {
+                     $current_net_setting .= ',rate=' . $plan->netrate;
+                }
+                if ($plan->ipv6 == 'auto') {
+                    $current_net_setting .= ',ip6=auto';
+                    $vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
+                } elseif ($plan->ipv6 == 'dhcp') {
+                    $current_net_setting .= ',ip6=dhcp';
+                    $vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
+                }
+                if (!empty($plan->vlanid)) {
+                     $current_net_setting .= ',tag=' . $plan->vlanid;
+                }
+                $vm_settings[$lxc_ipv6_interface_index] = $current_net_setting;
+            }
+            // If no IPv4 and no IPv6, ensure at least one interface is defined if bridge is set
+            if (!$ipv4_addr && !$ipv6_addr && !empty($plan->bridge)) {
+                 $vm_settings['net0'] = 'name=eth0,bridge=' . $plan->bridge . $plan->vmbr . ',ip=dhcp'; // Fallback to DHCP if no static IP
+            }
+
+
 			$vm_settings['onboot'] = $plan->onboot;
 			$vm_settings['password'] = $params['customfields']['Password'];
 		} else {
@@ -259,27 +346,34 @@ function pvewhmcs_CreateAccount($params) {
 			$vm_settings['sockets'] = $plan->cpus;
 			$vm_settings['cores'] = $plan->cores;
 			$vm_settings['cpu'] = $plan->cpuemu;
-			$vm_settings['nameserver'] = '1.1.1.1 1.0.0.1';
-			$vm_settings['ipconfig0'] = 'ip=' . $ip->ipaddress . '/' . mask2cidr($ip->mask) . ',gw=' . $ip->gateway;
-			if (!empty($plan->ipv6) && $plan->ipv6 != '0') {
-				switch ($plan->ipv6) {
-					case 'auto':
-						// Pass in auto, triggering SLAAC
-						$vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
-						$vm_settings['ipconfig1'] = 'ip6=auto';
-						break;
-					case 'dhcp':
-						// DHCP for IPv6 option
-						$vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
-						$vm_settings['ipconfig1'] = 'ip6=dhcp';
-						break;
-					case 'prefix':
-						// Future development
-						break;
-					default:
-						break;
-				}
-			}
+			$vm_settings['nameserver'] = '1.1.1.1 1.0.0.1'; // Default DNS
+            
+            if ($ipv4_addr) {
+			    $vm_settings['ipconfig0'] = 'ip=' . $ipv4_addr . '/' . mask2cidr($ipv4_mask) . ',gw=' . $ipv4_gw;
+            }
+
+            // IPv6 Configuration for QEMU/KVM
+            if ($ipv6_addr) { // Assigned IPv6 from pool
+                $vm_settings['ipconfig1'] = 'ip6=' . $ipv6_addr . '/' . $ipv6_prefix;
+                if ($ipv6_gw) {
+                    $vm_settings['ipconfig1'] .= ',gw6=' . $ipv6_gw;
+                }
+                 $vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001'; // Add IPv6 DNS
+            } elseif (!empty($plan->ipv6) && $plan->ipv6 != '0' && $plan->ipv6 != 'prefix') {
+                 // Plan-level IPv6 config (SLAAC/DHCPv6)
+                if ($plan->ipv6 == 'auto') {
+                    $vm_settings['ipconfig1'] = 'ip6=auto';
+                    $vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
+                } elseif ($plan->ipv6 == 'dhcp') {
+                    $vm_settings['ipconfig1'] = 'ip6=dhcp';
+                     $vm_settings['nameserver'] .= ' 2606:4700:4700::1111 2606:4700:4700::1001';
+                }
+            }
+            // If no IPv4 and no IPv6, ipconfig0 might need to be DHCP if an interface is defined
+            if (!$ipv4_addr && !$ipv6_addr && $plan->netmode != 'none'){
+                $vm_settings['ipconfig0'] = 'ip=dhcp'; // Fallback to DHCP on ipconfig0
+            }
+
 			$vm_settings['kvm'] = $plan->kvm;
 			$vm_settings['onboot'] = $plan->onboot;
 
@@ -300,25 +394,26 @@ function pvewhmcs_CreateAccount($params) {
 				if ($plan->netmode == 'bridge') {
 					$vm_settings['net0'] .= ',bridge=' . $plan->bridge . $plan->vmbr;
 				}
-				$vm_settings['net0'] .= ',firewall=' . $plan->firewall;
+                if (!empty($plan->vlanid)) {
+                    $vm_settings['net0'] .= ',tag=' . $plan->vlanid; // Proxmox uses 'tag' for VLAN ID
+                }
+				$vm_settings['net0'] .= ',firewall=' . ($plan->firewall ? '1' : '0');
 				if (!empty($plan->netrate)) {
 					$vm_settings['net0'] .= ',rate=' . $plan->netrate;
 				}
-				if (!empty($plan->vlanid)) {
-					$vm_settings['net0'] .= ',trunk=' . $plan->vlanid;
-				}
-				// IPv6: Same configs for second interface
+
+				// IPv6: Same configs for second interface if ipconfig1 is set
 				if (isset($vm_settings['ipconfig1'])) {
-					$vm_settings['net1'] = $plan->netmodel;
+					$vm_settings['net1'] = $plan->netmodel; // e.g., virtio
 					if ($plan->netmode == 'bridge') {
 						$vm_settings['net1'] .= ',bridge=' . $plan->bridge . $plan->vmbr;
 					}
-					$vm_settings['net1'] .= ',firewall=' . $plan->firewall;
+                    if (!empty($plan->vlanid)) {
+                        $vm_settings['net1'] .= ',tag=' . $plan->vlanid;
+                    }
+					$vm_settings['net1'] .= ',firewall=' . ($plan->firewall ? '1' : '0');
 					if (!empty($plan->netrate)) {
 						$vm_settings['net1'] .= ',rate=' . $plan->netrate;
-					}
-					if (!empty($plan->vlanid)) {
-						$vm_settings['net1'] .= ',trunk=' . $plan->vlanid;
 					}
 				}
 			}
@@ -401,11 +496,14 @@ function pvewhmcs_CreateAccount($params) {
 							'id' => $params['serviceid'],
 							'user_id' => $params['clientsdetails']['userid'],
 							'vtype' => $v,
-							'ipaddress' => $ip->ipaddress,
-							'subnetmask' => $ip->mask,
-							'gateway' => $ip->gateway,
+							'ipaddress' => $ipv4_addr,
+							'subnetmask' => $ipv4_mask,
+							'gateway' => $ipv4_gw,
+                            'ipv6_address' => $ipv6_addr,
+                            'ipv6_mask' => $ipv6_prefix,
+                            'ipv6_gateway' => $ipv6_gw,
 							'created' => date("Y-m-d H:i:s"),
-							'v6prefix' => $plan->ipv6,
+							'v6prefix' => $plan->ipv6, // Plan-level IPv6 config, distinct from assigned IP
 						]
 					);
 					return true;
@@ -976,8 +1074,17 @@ function pvewhmcs_ClientArea($params) {
 		$vm_config['ipv4'] = $guest->ipaddress ;
 		$vm_config['netmask4'] = $guest->subnetmask ;
 		$vm_config['gateway4'] = $guest->gateway ;
+        $vm_config['ipv6'] = $guest->ipv6_address;
+        $vm_config['ipv6mask'] = $guest->ipv6_mask;
+        $vm_config['ipv6gateway'] = $guest->ipv6_gateway;
+        $vm_config['ipv6'] = $guest->ipv6_address;
+        $vm_config['ipv6mask'] = $guest->ipv6_mask;
+        $vm_config['ipv6gateway'] = $guest->ipv6_gateway;
+        $vm_config['ipv6'] = $guest->ipv6_address;
+        $vm_config['ipv6mask'] = $guest->ipv6_mask;
+        $vm_config['ipv6gateway'] = $guest->ipv6_gateway;
 		$vm_config['created'] = $guest->created ;
-		$vm_config['v6prefix'] = $guest->v6prefix ;
+		$vm_config['v6prefix'] = $guest->v6prefix ; // This is the plan's IPv6 setting (auto/dhcp/prefix)
 	}
 	else {
 		echo '<center><strong>Unable to contact Hypervisor - aborting!<br>Please contact Tech Support.</strong></center>'; 

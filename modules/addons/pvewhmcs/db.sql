@@ -62,5 +62,8 @@ CREATE TABLE IF NOT EXISTS `mod_pvewhmcs_vms` (
   `gateway` varchar(255) NOT NULL,
   `created` datetime DEFAULT NULL,
   `v6prefix` varchar(128) DEFAULT NULL,
+  `ipv6_address` VARCHAR(255) DEFAULT NULL,
+  `ipv6_mask` VARCHAR(3) DEFAULT NULL,
+  `ipv6_gateway` VARCHAR(255) DEFAULT NULL,
   PRIMARY KEY (`id`)
 );

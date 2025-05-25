@@ -90,7 +90,32 @@ function pvewhmcs_activate() {
             // For simplicity here, we'll note it might cause an error that's suppressed.
             // In a real scenario, logging this is crucial.
             $err = true; // Mark as error if this fails, as schema might be inconsistent.
-            $activation_message_description = 'Proxmox VE for WHMCS was partially installed. Error adding pool_type column: ' . $e->getMessage();
+            $activation_message_description = 'Proxmox VE for WHMCS was partially installed. Error adding pool_type column to mod_pvewhmcs_ip_pools: ' . $e->getMessage();
+        }
+    }
+    
+    // After initial setup from db.sql, check and add new IPv6 columns to mod_pvewhmcs_vms if they don't exist
+    if (!$err) {
+        try {
+            $dbName = Capsule::connection()->getDatabaseName();
+            $vmsColumnsToAdd = [
+                'ipv6_address' => "VARCHAR(255) DEFAULT NULL",
+                'ipv6_mask' => "VARCHAR(3) DEFAULT NULL",
+                'ipv6_gateway' => "VARCHAR(255) DEFAULT NULL",
+            ];
+
+            foreach ($vmsColumnsToAdd as $columnName => $columnDefinition) {
+                $columnCheckVms = Capsule::select(
+                    "SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = 'mod_pvewhmcs_vms' AND column_name = ?",
+                    [$dbName, $columnName]
+                );
+                if (empty($columnCheckVms)) {
+                    Capsule::statement("ALTER TABLE mod_pvewhmcs_vms ADD COLUMN `$columnName` $columnDefinition");
+                }
+            }
+        } catch (\Exception $e) {
+            $err = true; 
+            $activation_message_description = (isset($activation_message_description) ? $activation_message_description . '; ' : '') . 'Error adding IPv6 columns to mod_pvewhmcs_vms: ' . $e->getMessage();
         }
     }
 

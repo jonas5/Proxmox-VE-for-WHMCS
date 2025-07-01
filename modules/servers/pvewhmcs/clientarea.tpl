@@ -149,9 +149,16 @@
             <div class="form-group">
                 <label for="kernel_loader_os">Operating System Type:</label>
                 <select name="kernel_loader_os" id="kernel_loader_os" class="form-control">
-                    <option value="l26" {if $vm_config.ostype eq 'l26' or ($vm_config.ostype ne 'win10' and $vm_config.ostype ne 'win11' and $vm_config.ostype ne 'other')}selected{/if}>Linux (Kernel 2.6+ / SeaBIOS)</option>
+                    <option value="l26" {if $vm_config.ostype eq 'l26' or ($vm_config.ostype eq 'Linux (Kernel 2.6+ / SeaBIOS)') or ($vm_config.ostype ne 'win10' and $vm_config.ostype ne 'win11' and $vm_config.ostype ne 'other' and $vm_config.ostype ne 'l26_centos' and $vm_config.ostype ne 'l26_debian' and $vm_config.ostype ne 'l26_ubuntu' and $vm_config.ostype ne 'solaris' and $vm_config.ostype ne 'w2k' and $vm_config.ostype ne 'w2k3' and $vm_config.ostype ne 'w2k8')}selected{/if}>Linux Generic (Kernel 2.6+ / SeaBIOS)</option>
+                    <option value="l26_centos" {if $vm_config.ostype eq 'l26_centos'}selected{/if}>CentOS (SeaBIOS)</option>
+                    <option value="l26_debian" {if $vm_config.ostype eq 'l26_debian'}selected{/if}>Debian (SeaBIOS)</option>
+                    <option value="l26_ubuntu" {if $vm_config.ostype eq 'l26_ubuntu'}selected{/if}>Ubuntu (SeaBIOS)</option>
+                    <option value="solaris" {if $vm_config.ostype eq 'solaris'}selected{/if}>Solaris (SeaBIOS)</option>
                     <option value="win10" {if $vm_config.ostype eq 'win10'}selected{/if}>Windows 10/2016/2019 (OVMF/UEFI)</option>
                     <option value="win11" {if $vm_config.ostype eq 'win11'}selected{/if}>Windows 11/2022/2025 (OVMF/UEFI)</option>
+                    <option value="w2k" {if $vm_config.ostype eq 'w2k'}selected{/if}>Windows 2000 (SeaBIOS)</option>
+                    <option value="w2k3" {if $vm_config.ostype eq 'w2k3'}selected{/if}>Windows 2003 (SeaBIOS)</option>
+                    <option value="w2k8" {if $vm_config.ostype eq 'w2k8'}selected{/if}>Windows 2008 (SeaBIOS)</option>
                     <option value="other" {if $vm_config.ostype eq 'other'}selected{/if}>Other/Custom (SeaBIOS)</option>
                 </select>
             </div>

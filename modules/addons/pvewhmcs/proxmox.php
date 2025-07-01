@@ -596,6 +596,93 @@ class PVE2_API {
 	}
 
 	// Logout not required, PVEAuthCookie tokens have a 2 hour lifetime.
+
+	/**
+	 * Get list of ISO images from a specific storage on a node.
+	 *
+	 * @param string $node The node name.
+	 * @param string $storage The storage ID.
+	 * @return array List of ISO image names, or empty array on failure/no ISOs.
+	 */
+	public function get_iso_images($node, $storage) {
+		if (empty($node) || empty($storage)) {
+			error_log("PVE2 API: Node and Storage parameters are required for get_iso_images.");
+			return array();
+		}
+		try {
+			$content = $this->get("/nodes/{$node}/storage/{$storage}/content");
+			$iso_images = array();
+			if (!empty($content) && is_array($content)) {
+				foreach ($content as $item) {
+					if (isset($item['content']) && $item['content'] === 'iso' && isset($item['volid'])) {
+						// Extract the filename from volid (e.g., local:iso/filename.iso -> filename.iso)
+						$parts = explode('/', $item['volid']);
+						$iso_images[] = end($parts);
+					}
+				}
+			}
+			return $iso_images;
+		} catch (PVE2_Exception $e) {
+			error_log("PVE2 API Error in get_iso_images: " . $e->getMessage());
+			return array();
+		}
+	}
+
+	/**
+	 * Mount an ISO image to a QEMU VM.
+	 *
+	 * @param string $node The node name.
+	 * @param int $vmid The VM ID.
+	 * @param string $iso_name The name of the ISO file (e.g., myimage.iso).
+	 * @param string $drive The virtual drive to use (e.g., ide2, sata0). Default 'ide2'.
+	 * @param string $storage The storage where the ISO is located. Default 'local'.
+	 * @return bool True on success, false on failure.
+	 */
+	public function mount_iso_image($node, $vmid, $iso_name, $drive = 'ide2', $storage = 'local') {
+		if (empty($node) || empty($vmid) || empty($iso_name) || empty($drive) || empty($storage)) {
+			error_log("PVE2 API: Node, VMID, ISO name, drive, and storage parameters are required for mount_iso_image.");
+			return false;
+		}
+		$params = array(
+			$drive => "{$storage}:iso/{$iso_name},media=cdrom"
+		);
+		try {
+			// Proxmox API expects a PUT request to change config
+			return $this->put("/nodes/{$node}/qemu/{$vmid}/config", $params);
+		} catch (PVE2_Exception $e) {
+			error_log("PVE2 API Error in mount_iso_image for VM {$vmid} on node {$node} with ISO {$iso_name}: " . $e->getMessage());
+			return false;
+		}
+	}
+
+	/**
+	 * Unmount/eject an ISO image from a QEMU VM.
+	 *
+	 * @param string $node The node name.
+	 * @param int $vmid The VM ID.
+	 * @param string $drive The virtual drive to eject (e.g., ide2, sata0). Default 'ide2'.
+	 * @return bool True on success, false on failure.
+	 */
+	public function unmount_iso_image($node, $vmid, $drive = 'ide2') {
+		if (empty($node) || empty($vmid) || empty($drive)) {
+			error_log("PVE2 API: Node, VMID, and drive parameters are required for unmount_iso_image.");
+			return false;
+		}
+		// To unmount, we 'delete' the drive configuration for the ISO by setting it to an empty string,
+		// or by using the 'delete' parameter if supported for specific keys.
+		// A common way is to update the config with the drive set to empty or use a specific delete instruction.
+		// Proxmox typically uses a PUT request with a 'delete' parameter for specific keys.
+		$params = array(
+			'delete' => $drive
+		);
+		try {
+			// Proxmox API expects a PUT request to change config
+			return $this->put("/nodes/{$node}/qemu/{$vmid}/config", $params);
+		} catch (PVE2_Exception $e) {
+			error_log("PVE2 API Error in unmount_iso_image for VM {$vmid} on node {$node}, drive {$drive}: " . $e->getMessage());
+			return false;
+		}
+	}
 }
 
 ?>

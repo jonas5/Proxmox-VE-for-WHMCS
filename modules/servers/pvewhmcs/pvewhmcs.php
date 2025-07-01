@@ -822,13 +822,14 @@ function pvewhmcs_ClientAreaCustomButtonArray() {
 	        "<i class='fa fa-2x fa-cogs'></i> Kernel Configuration" => "redirectToKernelConfigView",
 		"<i class='fa fa-2x fa-sort-amount-up'></i> &nbsp; Boot Order" => "loadBootOrderPage",
 		"<i class='fa fa-2x fa-terminal'></i> &nbsp; Advanced Boot Options" => "loadCustomArgsPage",
+		"<i class='fa fa-2x fa-rocket'></i> &nbsp; Boost VM" => "loadBoostPage",
 		"<i class='fa fa-2x fa-chart-bar'></i> &nbsp; Statistics" => "vmStat",
 	);
 	return $buttonarray;
 }
 
 function pvewhmcs_ClientAreaAllowedFunctions() {
-    return ['mountIso', 'loadIsoPage', 'umountIso', 'unmountIso', 'saveKernelConfig', 'loadBootOrderPage', 'saveBootOrderConfig', 'loadCustomArgsPage', 'saveCustomArgsConfig'];
+    return ['mountIso', 'loadIsoPage', 'umountIso', 'unmountIso', 'saveKernelConfig', 'loadBootOrderPage', 'saveBootOrderConfig', 'loadCustomArgsPage', 'saveCustomArgsConfig', 'loadBoostPage', 'applyBoostConfig'];
 }
 
 
@@ -1016,6 +1017,96 @@ function pvewhmcs_saveCustomArgsConfig($params) {
     exit;
 }
 
+// ACTION: Display VM Boost Configuration Page
+function pvewhmcs_loadBoostPage($params) {
+    $serviceid = $params['serviceid'];
+
+    // Gather access credentials for PVE
+    $pveservice = Capsule::table('tblhosting')->find($serviceid);
+    if (!$pveservice) {
+        return ['error' => "Service hosting record not found."]; // Should ideally use a template for error
+    }
+    $pveserver = Capsule::table('tblservers')->where('id', '=', $pveservice->server)->first();
+    if (!$pveserver) {
+        return ['error' => "Server record not found for service."];
+    }
+
+    $serverip = $pveserver->ipaddress;
+    $serverusername = $pveserver->username;
+    $api_data = array('password2' => $pveserver->password);
+    $serverpassword_decrypted = localAPI('DecryptPassword', $api_data);
+    $serverpassword = $serverpassword_decrypted['password'];
+
+    $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+    $current_cores = 0;
+    $current_memory_mb = 0;
+    $max_allowed_vcpus = 0; // This is the 'cpus' param in PVE config
+    $error_message = null;
+    $action_message = null;
+
+    if (isset($_SESSION['pvewhmcs_boost_message'])) {
+        $action_message = $_SESSION['pvewhmcs_boost_message'];
+        unset($_SESSION['pvewhmcs_boost_message']);
+    }
+
+    $guest_info_local = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $serviceid)->first();
+    if (!$guest_info_local) {
+        $error_message = "VM details not found in module database.";
+    } elseif ($guest_info_local->vtype !== 'qemu') {
+        $error_message = "VM Boost feature is only applicable to QEMU/KVM virtual machines.";
+    } else {
+        if ($proxmox->login()) {
+            $nodes = $proxmox->get_node_list();
+            if (!empty($nodes) && isset($nodes[0])) {
+                $first_node = $nodes[0];
+                $vm_config = $proxmox->get("/nodes/{$first_node}/qemu/{$serviceid}/config");
+
+                if ($vm_config) {
+                    $current_cores = isset($vm_config['cores']) ? $vm_config['cores'] : 0;
+                    // Sockets might also be relevant if plan is to boost sockets. For now, focusing on cores.
+                    // $current_sockets = isset($vm_config['sockets']) ? $vm_config['sockets'] : 1;
+                    // $current_total_vcpus = $current_cores * $current_sockets; // More accurate current vCPUs
+
+                    $current_memory_mb = isset($vm_config['memory']) ? $vm_config['memory'] : 0;
+                    $max_allowed_vcpus = isset($vm_config['cpus']) ? $vm_config['cpus'] : $current_cores; // 'cpus' is max vCPUs; defaults to current cores if not set explicitly higher
+                     if ($max_allowed_vcpus == 0 && $current_cores > 0) $max_allowed_vcpus = $current_cores; // Fallback if cpus param is 0 but cores exist
+                } else {
+                    $error_message = "Could not retrieve current VM configuration from Proxmox.";
+                }
+            } else {
+                $error_message = "Could not retrieve node list from Proxmox.";
+            }
+        } else {
+            $error_message = "Failed to login to Proxmox API. Please check credentials and connectivity.";
+        }
+    }
+
+    $csrf_token = '';
+    if (function_exists('generate_token')) {
+        $csrf_token = generate_token('plain');
+    }
+
+    // Define some practical limits for sliders (can be made configurable later)
+    $max_boost_memory_gb = 128;
+    $max_boost_cpu_cores = 20; // This will be further limited by $max_allowed_vcpus from PVE
+
+    return array(
+        'templatefile' => 'boost', // Will be modules/servers/pvewhmcs/boost.tpl
+        'vars' => array(
+            'params' => $params,
+            'current_cores' => $current_cores,
+            'current_memory_mb' => $current_memory_mb,
+            'max_allowed_vcpus_for_vm' => $max_allowed_vcpus, // Max vCPUs VM is configured for
+            'max_boost_memory_gb' => $max_boost_memory_gb,   // UI upper limit for memory slider
+            'max_boost_cpu_cores_ui' => $max_boost_cpu_cores, // UI upper limit for CPU slider (before PVE limit)
+            'error_message' => $error_message,
+            'action_message' => $action_message,
+            'csrf_token' => $csrf_token,
+        ),
+    );
+}
+
 // ACTION: Save Boot Order Configuration by Client
 function pvewhmcs_saveBootOrderConfig($params) {
     session_start(); // Required to pass messages back via session
@@ -1148,6 +1239,147 @@ function pvewhmcs_saveBootOrderConfig($params) {
     header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBootOrderPage");
     exit;
 }
+
+// ACTION: Apply VM Boost Configuration
+function pvewhmcs_applyBoostConfig($params) {
+    session_start(); // Required to pass messages back via session
+    $serviceid = $params['serviceid'];
+
+    // Verify CSRF token
+    if (function_exists('check_token')) {
+        check_token("WHMCS.default");
+    } else {
+        $submitted_token = isset($_POST['token']) ? $_POST['token'] : '';
+        if (!isset($_SESSION['tkval']) || empty($_SESSION['tkval']) || $submitted_token !== $_SESSION['tkval']) {
+            if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); }
+            $_SESSION['pvewhmcs_boost_message'] = "Error: Security token validation failed. Please try again.";
+            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBoostPage");
+            exit;
+        }
+    }
+    // Regenerate token for next form load, even if there's an error later (consumed by check_token or manual check)
+    if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); }
+
+
+    $desired_cores = isset($_POST['boost_cpu_cores']) ? (int)$_POST['boost_cpu_cores'] : 0;
+    $desired_memory_mb = isset($_POST['boost_memory_mb']) ? (int)$_POST['boost_memory_mb'] : 0;
+    // $boost_duration_hours = isset($_POST['boost_duration_hours']) ? (int)$_POST['boost_duration_hours'] : 0; // For future use
+
+    logModuleCall('pvewhmcs', __FUNCTION__ . ' - Boost Request Received', $_POST, '');
+
+    try {
+        // --- Gather PVE Credentials and Connect ---
+        $pveservice_details = Capsule::table('tblhosting')->find($serviceid);
+        if (!$pveservice_details) throw new Exception("Service record not found.");
+        $pveserver_details = Capsule::table('tblservers')->where('id', '=', $pveservice_details->server)->first();
+        if (!$pveserver_details) throw new Exception("Server record not found for service.");
+
+        $serverip = $pveserver_details->ipaddress;
+        $serverusername = $pveserver_details->username;
+        $api_data_pw = ['password2' => $pveserver_details->password];
+        $decrypted_password_result = localAPI('DecryptPassword', $api_data_pw);
+        $serverpassword = $decrypted_password_result['password'];
+
+        $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+        if (!$proxmox->login()) throw new Exception("Failed to connect to Proxmox server.");
+
+        $nodes = $proxmox->get_node_list();
+        if (empty($nodes)) throw new Exception("No nodes found on Proxmox server.");
+        $first_node = $nodes[0];
+
+        // --- Validate VM Type ---
+        $guest_db_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $serviceid)->first();
+        if (!$guest_db_info) throw new Exception("VM not found in module database.");
+        if ($guest_db_info->vtype !== 'qemu') throw new Exception("VM Boost is only for QEMU/KVM VMs.");
+
+        // --- Fetch Current Proxmox Config for Validation ---
+        $vm_config_pve = $proxmox->get("/nodes/{$first_node}/qemu/{$serviceid}/config");
+        if (!$vm_config_pve) throw new Exception("Could not retrieve current VM configuration from Proxmox for validation.");
+
+        $current_pve_cores = isset($vm_config_pve['cores']) ? (int)$vm_config_pve['cores'] : 0;
+        $max_allowed_vcpus_for_vm = isset($vm_config_pve['cpus']) ? (int)$vm_config_pve['cpus'] : $current_pve_cores;
+        if ($max_allowed_vcpus_for_vm == 0 && $current_pve_cores > 0) $max_allowed_vcpus_for_vm = $current_pve_cores;
+
+        $current_pve_memory_mb = isset($vm_config_pve['memory']) ? (int)$vm_config_pve['memory'] : 0;
+
+        // --- Validation of Inputs ---
+        if ($desired_cores <= 0 || $desired_memory_mb <= 0) {
+            throw new Exception("Invalid CPU cores or memory value submitted.");
+        }
+        if ($desired_cores < $current_pve_cores && $desired_cores != $current_pve_cores) { // Allow setting to current, but not less without specific "de-boost" logic
+             // For now, we are only "boosting" or setting to current. Reducing requires more thought on "de-boosting".
+             // This logic might need refinement if the goal is to also allow reducing via this interface.
+             // Let's assume for now boost means same or more.
+           // throw new Exception("Reducing CPU cores is not supported via the boost function. Current: {$current_pve_cores}, Requested: {$desired_cores}");
+        }
+        if ($desired_memory_mb < $current_pve_memory_mb && $desired_memory_mb != $current_pve_memory_mb) {
+           // throw new Exception("Reducing memory is not supported via the boost function. Current: {$current_pve_memory_mb}MB, Requested: {$desired_memory_mb}MB");
+        }
+
+        if ($max_allowed_vcpus_for_vm > 0 && $desired_cores > $max_allowed_vcpus_for_vm) {
+            throw new Exception("Requested CPU cores ({$desired_cores}) exceed the maximum vCPUs ({$max_allowed_vcpus_for_vm}) configured for this VM in Proxmox. Please adjust the 'cpus' setting in Proxmox VM options if you need more.");
+        }
+
+        // --- Prepare Proxmox API Parameters ---
+        $update_params = [];
+        $changes_requested = false;
+
+        if ($desired_cores != $current_pve_cores) {
+            $update_params['cores'] = $desired_cores;
+            // Note: If you also want to manage sockets, that logic would go here.
+            // Proxmox calculates total vCPUs as cores * sockets.
+            // If 'cpus' (max vCPUs) is set, 'cores' and 'sockets' must result in a total <= 'cpus'.
+            // For simplicity, this implementation only adjusts 'cores' and assumes sockets=1 or is managed by PVE.
+            // If sockets > 1, then desired_cores here means total cores, and PVE might adjust sockets or cores per socket.
+            // It's often simpler to just set 'cores' and let 'sockets' be 1 if 'cpus' is the overall limiter.
+            // Or, if 'cpus' is not set, then 'cores' * 'sockets' is the actual current vCPU count.
+            // Let's assume we are setting total cores directly.
+            $changes_requested = true;
+        }
+        if ($desired_memory_mb != $current_pve_memory_mb) {
+            $update_params['memory'] = $desired_memory_mb;
+            $changes_requested = true;
+        }
+
+        if (!$changes_requested) {
+            $_SESSION['pvewhmcs_boost_message'] = "No changes detected in CPU cores or memory. Current values match requested values.";
+            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBoostPage");
+            exit;
+        }
+
+        // --- Apply to Proxmox ---
+        // Proxmox typically uses PUT for config changes. Some live actions might be POST.
+        // For CPU/memory hotplug, POST to /status/resize might be an option for some PVE versions/configs,
+        // but PUT to /config is the general way to change these values. PVE then attempts hotplug if possible.
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Proxmox API Update Params', $update_params, '');
+        $update_response = $proxmox->put("/nodes/{$first_node}/qemu/{$serviceid}/config", $update_params);
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' (Proxmox update_config response)', $update_response, '');
+
+        if ($update_response !== true) { // PVE2_API put() returns true on success
+            $api_error_message = "Failed to apply boost configuration to Proxmox.";
+             if(is_array($update_response) && isset($update_response['errors'])) {
+                 $api_error_message .= " Details: " . json_encode($update_response['errors']);
+             } else if (is_string($update_response) && !empty($update_response)) {
+                 $api_error_message .= " Details: " . htmlentities($update_response);
+             }
+            throw new Exception($api_error_message);
+        }
+
+        // Here, you would ideally store the boost details (original values, new values, duration, service_id)
+        // in a custom database table for later automatic reversion by a cron job.
+        // e.g., Capsule::table('mod_pvewhmcs_vm_boosts')->insert([...]);
+
+        $_SESSION['pvewhmcs_boost_message'] = "Success: Boost configuration applied. Proxmox will attempt to hotplug resources. Some changes may require a VM reboot if hotplug is not fully supported by the guest OS or current VM state. This boost is not yet automatically reverted.";
+
+    } catch (Exception $e) {
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Exception Caught', $_POST, $e->getMessage() . $e->getTraceAsString());
+        $_SESSION['pvewhmcs_boost_message'] = "Error: " . htmlentities($e->getMessage());
+    }
+
+    header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBoostPage");
+    exit;
+}
+
 
 // ACTION: Display Custom QEMU Arguments Page
 function pvewhmcs_loadCustomArgsPage($params) {

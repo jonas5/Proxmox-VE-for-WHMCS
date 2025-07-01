@@ -39,9 +39,15 @@
           {elseif $current_boot_order_raw}
             {* Handle legacy format like "cdn", "c", "d", "n" *}
             {assign var="legacy_boot" value=true}
-            {if $current_boot_order_raw|strstr:'c'}{assign var="current_order_devices" value=$current_order_devices|array_push:'ide2'}{/if}
-            {if $current_boot_order_raw|strstr:'d'}{assign var="current_order_devices" value=$current_order_devices|array_push:'scsi0'}{/if} {* Assuming scsi0 for disk, could be others *}
-            {if $current_boot_order_raw|strstr:'n'}{assign var="current_order_devices" value=$current_order_devices|array_push:'net0'}{/if}
+            {if $current_boot_order_raw|strstr:'c'}
+                {append var='current_order_devices' value='ide2' scope='local'}
+            {/if}
+            {if $current_boot_order_raw|strstr:'d'}
+                {append var='current_order_devices' value='scsi0' scope='local'} {* Assuming scsi0 for disk, could be others *}
+            {/if}
+            {if $current_boot_order_raw|strstr:'n'}
+                {append var='current_order_devices' value='net0' scope='local'}
+            {/if}
           {/if}
           
           {* Ensure all available_devices are shown, checked if in current_order_devices *}
@@ -49,30 +55,35 @@
           {foreach from=$available_devices item=dev}
             {if $dev} {* Ensure device name is not empty *}
               {assign var="is_enabled" value=false}
-              {foreach from=$current_order_devices item=ordered_dev}
-                {if $ordered_dev == $dev}
-                  {assign var="is_enabled" value=true}
-                {/if}
-              {/foreach}
-              {assign var="all_display_devices" value=$all_display_devices|array_push:['name' => $dev, 'enabled' => $is_enabled]}
+              {if $current_order_devices|is_array}
+                {foreach from=$current_order_devices item=ordered_dev}
+                  {if $ordered_dev == $dev}
+                    {assign var="is_enabled" value=true}
+                  {/if}
+                {/foreach}
+              {/if}
+              {append var='all_display_devices' value=['name' => $dev, 'enabled' => $is_enabled] scope='local'}
             {/if}
           {/foreach}
 
           {* Add devices from current order that might not be in "available_devices" (e.g. if config parsing was basic) *}
-          {foreach from=$current_order_devices item=ordered_dev}
-            {if $ordered_dev}
-              {assign var="found_in_display" value=false}
-              {foreach from=$all_display_devices item=disp_dev}
-                {if $disp_dev.name == $ordered_dev}
-                  {assign var="found_in_display" value=true}
+          {if $current_order_devices|is_array}
+            {foreach from=$current_order_devices item=ordered_dev}
+              {if $ordered_dev}
+                {assign var="found_in_display" value=false}
+                {if $all_display_devices|is_array}
+                  {foreach from=$all_display_devices item=disp_dev}
+                    {if $disp_dev.name == $ordered_dev}
+                      {assign var="found_in_display" value=true}
+                    {/if}
+                  {/foreach}
                 {/if}
-              {/foreach}
-              {if !$found_in_display}
-                {assign var="all_display_devices" value=$all_display_devices|array_push:['name' => $ordered_dev, 'enabled' => true]}
+                {if !$found_in_display}
+                  {append var='all_display_devices' value=['name' => $ordered_dev, 'enabled' => true] scope='local'}
+                {/if}
               {/if}
-            {/if}
-          {/foreach}
-
+            {/foreach}
+          {/if}
 
           <ul id="boot-device-list" class="list-group">
             {foreach from=$all_display_devices item=device}

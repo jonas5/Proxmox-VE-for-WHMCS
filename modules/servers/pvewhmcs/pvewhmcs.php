@@ -2154,10 +2154,12 @@ function pvewhmcs_vmStart($params) {
 
 
 	if (isset($response) && !isset($response['errors'])) {
-		    return ['success' => true];
+		    // WHMCS expects the literal string "success" for the success alert.
+		    return "success";
 	} else {
 		    $response_message = isset($response['errors']) ? json_encode($response['errors']) : json_encode($response);
-		    return ['error' => "Proxmox API Error: " . $response_message];
+		    // Return an error string for the failure alert.
+		    return "Proxmox API Error: " . $response_message;
 	}
 
 }

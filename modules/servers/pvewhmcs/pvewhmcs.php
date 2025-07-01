@@ -796,13 +796,14 @@ function pvewhmcs_ClientAreaCustomButtonArray() {
 		"<i class='fa fa-2x fa-stop'></i> &nbsp; Hard Stop" => "vmStop",
 		"<i class='fa fa-2x fa-compact-disc'></i> &nbsp; Load Iso" => "loadIsoPage",
 	        "<i class='fa fa-2x fa-cogs'></i> Kernel Configuration" => "redirectToKernelConfigView",
+		"<i class='fa fa-2x fa-sort-amount-up'></i> &nbsp; Boot Order" => "loadBootOrderPage",
 		"<i class='fa fa-2x fa-chart-bar'></i> &nbsp; Statistics" => "vmStat",
 	);
 	return $buttonarray;
 }
 
 function pvewhmcs_ClientAreaAllowedFunctions() {
-    return ['mountIso', 'loadIsoPage', 'umountIso', 'unmountIso', 'saveKernelConfig'];
+    return ['mountIso', 'loadIsoPage', 'umountIso', 'unmountIso', 'saveKernelConfig', 'loadBootOrderPage', 'saveBootOrderConfig'];
 }
 
 
@@ -815,6 +816,228 @@ function pvewhmcs_redirectToVmStatsView($params) {
 // ACTION: Simple redirector function to show Kernel Config view
 function pvewhmcs_redirectToKernelConfigView($params) {
     header("Location: clientarea.php?action=productdetails&id=" . $params['serviceid'] . "&modaction=kernelconfig");
+    exit;
+}
+
+// ACTION: Display Boot Order Configuration Page
+function pvewhmcs_loadBootOrderPage($params) {
+    // Gather access credentials for PVE
+    $pveservice = Capsule::table('tblhosting')->find($params['serviceid']);
+    $pveserver = Capsule::table('tblservers')->where('id', '=', $pveservice->server)->first();
+
+    $serverip = $pveserver->ipaddress;
+    $serverusername = $pveserver->username;
+    $api_data = array('password2' => $pveserver->password);
+    $serverpassword_decrypted = localAPI('DecryptPassword', $api_data);
+    $serverpassword = $serverpassword_decrypted['password'];
+
+    $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+    $current_boot_order = '';
+    $available_devices = [];
+    $error_message = null;
+    $action_message = null; // For messages from save operation
+
+    if (isset($_SESSION['pvewhmcs_boot_order_message'])) {
+        $action_message = $_SESSION['pvewhmcs_boot_order_message'];
+        unset($_SESSION['pvewhmcs_boot_order_message']);
+    }
+
+    if ($proxmox->login()) {
+        $nodes = $proxmox->get_node_list();
+        if (!empty($nodes) && isset($nodes[0])) {
+            $first_node = $nodes[0];
+            $guest_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $params['serviceid'])->first();
+            $vm_type = $guest_info->vtype;
+
+            if ($vm_type == 'qemu') {
+                $vm_config = $proxmox->get("/nodes/{$first_node}/qemu/{$params['serviceid']}/config");
+                if ($vm_config) {
+                    $current_boot_order = isset($vm_config['boot']) ? $vm_config['boot'] : '';
+                    // Extract devices from config - this is a simplified list.
+                    // A more robust way would be to check for ideX, scsiX, virtioX, netX etc.
+                    // For now, let's list common ones that might appear in boot order.
+                    $possible_boot_devices = ['ide0', 'ide1', 'ide2', 'ide3', 'scsi0', 'scsi1', 'scsi2', 'virtio0', 'virtio1', 'net0', 'net1'];
+                    foreach ($possible_boot_devices as $dev) {
+                        if (isset($vm_config[$dev])) {
+                            // We only care that the device exists in config, not its details for this purpose.
+                            $available_devices[] = $dev;
+                        }
+                    }
+                    // Ensure devices currently in boot order are also listed if not caught by above
+                    if (!empty($current_boot_order) && strpos($current_boot_order, 'order=') === 0) {
+                        $order_str = substr($current_boot_order, strlen('order='));
+                        $ordered_devs = explode(';', $order_str);
+                        foreach($ordered_devs as $dev) {
+                            if (!empty($dev) && !in_array($dev, $available_devices)) {
+                                $available_devices[] = $dev; // Add it if it's in boot order but not found in simple config scan
+                            }
+                        }
+                    }
+
+
+                } else {
+                    $error_message = "Could not retrieve VM configuration.";
+                }
+            } else {
+                $error_message = "Boot order configuration is only applicable to QEMU/KVM virtual machines.";
+            }
+        } else {
+            $error_message = "Could not retrieve node list from Proxmox.";
+        }
+    } else {
+        $error_message = "Failed to login to Proxmox API. Please check credentials and connectivity.";
+    }
+
+    $csrf_token = '';
+    if (function_exists('generate_token')) {
+        $csrf_token = generate_token('plain');
+    }
+
+
+    return array(
+        'templatefile' => 'load_boot_order_area',
+        'vars' => array(
+            'params' => $params,
+            'current_boot_order_raw' => $current_boot_order,
+            'available_devices' => $available_devices,
+            'error_message' => $error_message,
+            'action_message' => $action_message,
+            'csrf_token' => $csrf_token,
+        ),
+    );
+}
+
+// ACTION: Save Boot Order Configuration by Client
+function pvewhmcs_saveBootOrderConfig($params) {
+    session_start(); // Required to pass messages back via session
+    $serviceid = $params['serviceid'];
+
+    // Verify CSRF token
+    if (function_exists('check_token')) {
+        check_token("WHMCS.default");
+    } else {
+        // Fallback CSRF check if check_token is somehow unavailable in this context
+        $submitted_token = isset($_POST['token']) ? $_POST['token'] : '';
+        if (!isset($_SESSION['tkval']) || empty($_SESSION['tkval']) || $submitted_token !== $_SESSION['tkval']) {
+            if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); } // Regenerate for next attempt
+            $_SESSION['pvewhmcs_boot_order_message'] = "Error: Security token validation failed. Please try again.";
+            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBootOrderPage");
+            exit;
+        }
+        // If manual check passes, regenerate token for next form load
+        if (function_exists('generate_token')) {
+            $_SESSION['tkval'] = generate_token('plain');
+        }
+    }
+
+    // Retrieve the order of all devices as submitted by the sortable list
+    $ordered_devices_all = isset($_POST['boot_device_order']) ? $_POST['boot_device_order'] : [];
+    // Retrieve only the devices that were checked (enabled)
+    $enabled_devices = isset($_POST['boot_device_enabled']) ? $_POST['boot_device_enabled'] : [];
+
+    $final_boot_order_parts = [];
+    // Iterate through the submitted order of all devices
+    foreach ($ordered_devices_all as $device_in_order) {
+        // If this device was also checked (enabled), add it to the final list in that order
+        if (in_array($device_in_order, $enabled_devices)) {
+            $final_boot_order_parts[] = $device_in_order;
+        }
+    }
+
+    $boot_config_string = "";
+    if (!empty($final_boot_order_parts)) {
+        $boot_config_string = "order=" . implode(';', $final_boot_order_parts);
+    } else {
+        // If no devices are selected, the user must select at least one.
+        // Proxmox requires a boot device. Sending an empty 'order=' or empty 'boot' is problematic.
+        $_SESSION['pvewhmcs_boot_order_message'] = "Error: You must select at least one boot device.";
+        // Regenerate token before redirecting due to error (as check_token might have consumed it)
+        if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); }
+        header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBootOrderPage");
+        exit;
+    }
+
+    logModuleCall('pvewhmcs', __FUNCTION__ . ' - Boot Order String to be set', $boot_config_string, $_POST);
+
+    try {
+        // Gather access credentials for PVE
+        $pveservice_details = Capsule::table('tblhosting')->find($serviceid);
+        if (!$pveservice_details) {
+            throw new Exception("Service not found in WHMCS.");
+        }
+        $pveserver_details = Capsule::table('tblservers')->where('id', '=', $pveservice_details->server)->first();
+        if (!$pveserver_details) {
+            throw new Exception("Server not found for this service.");
+        }
+
+        $serverip = $pveserver_details->ipaddress;
+        $serverusername = $pveserver_details->username;
+        $api_data_pw = ['password2' => $pveserver_details->password];
+        $decrypted_password_result = localAPI('DecryptPassword', $api_data_pw);
+        $serverpassword = $decrypted_password_result['password'];
+
+        if (empty($serverip) || empty($serverusername) || empty($serverpassword)) {
+            throw new Exception("Proxmox server connection details are missing or incomplete.");
+        }
+
+        $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+        if (!$proxmox->login()) {
+            throw new Exception("Failed to connect to Proxmox server. Please check credentials.");
+        }
+
+        $nodes = $proxmox->get_node_list();
+        if (empty($nodes)) {
+            throw new Exception("No nodes found on Proxmox server.");
+        }
+        $first_node = $nodes[0];
+
+        $guest_db_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $serviceid)->first();
+        if (!$guest_db_info) {
+            throw new Exception("VM not found in module database.");
+        }
+        $vtype = $guest_db_info->vtype;
+
+        if ($vtype !== 'qemu') {
+            throw new Exception("Boot order configuration is only applicable to QEMU/KVM virtual machines.");
+        }
+
+        $config_params = ['boot' => $boot_config_string];
+
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - API Config Params', $config_params, '');
+
+        $update_response = $proxmox->put("/nodes/{$first_node}/{$vtype}/{$serviceid}/config", $config_params);
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' (update_config response)', "/nodes/{$first_node}/{$vtype}/{$serviceid}/config", $update_response);
+
+        // The PVE2_API class's put method returns true on HTTP 200, or throws an exception/returns false on error.
+        if ($update_response !== true) {
+             $api_error_message = "Failed to update boot order on Proxmox.";
+             // Attempt to get more details if the response was an array (often contains error info from API)
+             if(is_array($update_response) && isset($update_response['errors'])) {
+                 $api_error_message .= " Details: " . json_encode($update_response['errors']);
+             } else if (is_string($update_response) && !empty($update_response)) {
+                 // Sometimes the API might return a string error directly in $update_response if not a structured JSON error
+                 $api_error_message .= " Details: " . htmlentities($update_response);
+             } else if ($update_response === false) {
+                $api_error_message .= " The API call returned false.";
+             }
+            throw new Exception($api_error_message);
+        }
+
+        $_SESSION['pvewhmcs_boot_order_message'] = "Success: Boot order updated to '{$boot_config_string}'. A reboot may be required for changes to take effect on the next startup.";
+
+    } catch (Exception $e) {
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Exception Caught', $boot_config_string, $e->getMessage() . $e->getTraceAsString());
+        $_SESSION['pvewhmcs_boot_order_message'] = "Error: " . htmlentities($e->getMessage());
+    }
+
+    // Regenerate token for the next form load on the page we are redirecting to.
+    if (function_exists('generate_token')) {
+        $_SESSION['tkval'] = generate_token('plain');
+    }
+
+    header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBootOrderPage");
     exit;
 }
 

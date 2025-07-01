@@ -30,10 +30,6 @@ if (isset($_GET['pveticket']) && isset($_GET['host']) && isset($_GET['path']) &&
 	$path = $_GET['path'];
 
 
-
-//	echo "pve> $pveticket <br>";
-//	echo "vnc> $vncticket <br>";
-
 	// Get the requesting hostname/domain from the WHMCS-originated request
 	$whmcsdomain = parse_url($_SERVER['HTTP_HOST']);
 	// Now extract just the domain parts we need (FUTURE: capacity/option for multi-part TLDs)
@@ -42,18 +38,11 @@ if (isset($_GET['pveticket']) && isset($_GET['host']) && isset($_GET['path']) &&
 	// Set the cookie as Proxmox will be expecting it, so it is WHMCS to VNC without further login
 
 	$domain = $_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'];
-        setrawcookie('PVEAuthCookie', $pveticket, 0, '/', 'hostscape.eu', true, false);
-	//setrawcookie('PVEAuthCookie', $pveticket, 0, '/', $domainonly);
+        setrawcookie('PVEAuthCookie', $pveticket, 0, '/', $domain, true, false);
 
 	// Create the final noVNC URL with the re-encoded vncticket
 	//$hostname = gethostbyaddr($host);
 	$redirect_url = '/modules/servers/pvewhmcs/novnc/vnc.html?autoconnect=true&encrypt=true&host=' . $host . '&password=' . urlencode($vncticket) . '&path=' . urlencode($path);
-//	$redirect_url = '/modules/servers/pvewhmcs/novnc/vnc.html?autoconnect=true&encrypt=true&host=' . $host . '&port=8006&password=' . urlencode($vncticket) . '&path=' . urlencode($path);
-	// Redirect the visitor to noVNC & we're done
-
-//    echo "whatsmydowmain: " . $domainonly . "<br>";
-//    echo "PVEAuthCookie: " . $pveticket;
-//    echo "PVEAuthCookie: " . $_COOKIE['PVEAuthCookie'];
 
 
 

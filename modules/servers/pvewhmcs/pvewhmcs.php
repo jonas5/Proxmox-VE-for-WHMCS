@@ -795,10 +795,199 @@ function pvewhmcs_ClientAreaCustomButtonArray() {
 		"<i class='fa fa-2x fa-sync'></i> Reboot Now" => "vmReboot",
 		"<i class='fa fa-2x fa-power-off'></i> Power Off" => "vmShutdown",
 		"<i class='fa fa-2x fa-stop'></i>  Hard Stop" => "vmStop",
-		"<i class='fa fa-2x fa-chart-bar'></i>  Statistics" => "vmStat",
+		"<i class='fa fa-2x fa-chart-bar'></i> View Statistics" => "redirectToVmStatsView",
+        "<i class='fa fa-2x fa-cogs'></i> Kernel Configuration" => "redirectToKernelConfigView",
 	);
 	return $buttonarray;
 }
+
+// ACTION: Simple redirector function to show VM Stats view
+function pvewhmcs_redirectToVmStatsView($params) {
+    header("Location: clientarea.php?action=productdetails&id=" . $params['serviceid'] . "&modaction=vmstats");
+    exit;
+}
+
+// ACTION: Simple redirector function to show Kernel Config view
+function pvewhmcs_redirectToKernelConfigView($params) {
+    header("Location: clientarea.php?action=productdetails&id=" . $params['serviceid'] . "&modaction=kernelconfig");
+    exit;
+}
+
+// ACTION: Save Kernel Configuration by Client
+function pvewhmcs_saveKernelConfig($params) {
+    $serviceid = $params['serviceid'];
+    $selected_os = $_POST['kernel_loader_os'];
+    // $whmcsToken = $_POST['token']; // No longer needed directly, check_token() handles it
+
+    // Verify CSRF token using WHMCS's standard function
+    if (function_exists('check_token')) {
+        check_token("WHMCS.default"); // This function will typically die() or redirect if the token is invalid.
+    } else {
+        // Fallback for environments where check_token might not be available (highly unlikely for client area)
+        // Or if a manual check is absolutely preferred (less secure than WHMCS's own)
+        $submitted_token = isset($_POST['token']) ? $_POST['token'] : '';
+        if (!isset($_SESSION['tkval']) || empty($_SESSION['tkval']) || $submitted_token !== $_SESSION['tkval']) {
+             if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); } // Regenerate for next attempt
+            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modaction=kernelconfig&kernelconfigerror=" . urlencode("Security token validation failed. Please try again."));
+            exit;
+        }
+        // If manual check passes, regenerate token for next form load
+        if (function_exists('generate_token')) {
+            $_SESSION['tkval'] = generate_token('plain');
+        }
+    }
+    // Note: generate_token() is called in pvewhmcs_ClientArea for the *next* page load.
+    // check_token() consumes the current token.
+
+    $new_bios_setting = '';
+    $new_ostype_setting = '';
+
+    switch ($selected_os) {
+        case 'win10':
+            $new_bios_setting = 'ovmf';
+            $new_ostype_setting = 'win10';
+            break;
+        case 'win11':
+            $new_bios_setting = 'ovmf';
+            $new_ostype_setting = 'win11';
+            break;
+        case 'l26':
+            $new_bios_setting = 'seabios';
+            $new_ostype_setting = 'l26';
+            break;
+        case 'other':
+            $new_bios_setting = 'seabios';
+            $new_ostype_setting = 'other';
+            break;
+        default:
+            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&tab=kernelconfig&kernelconfigerror=" . urlencode("Invalid OS selection."));
+            exit;
+    }
+
+    try {
+        // Gather access credentials for PVE
+        $pveservice_details = Capsule::table('tblhosting')->find($serviceid);
+        if (!$pveservice_details) {
+            throw new Exception("Service not found in WHMCS.");
+        }
+        $pveserver_details = Capsule::table('tblservers')->where('id', '=', $pveservice_details->server)->first();
+        if (!$pveserver_details) {
+            throw new Exception("Server not found for this service.");
+        }
+
+        $serverip = $pveserver_details->ipaddress;
+        $serverusername = $pveserver_details->username;
+        // Decrypt password
+        $api_data_pw = ['password2' => $pveserver_details->password];
+        $decrypted_password_result = localAPI('DecryptPassword', $api_data_pw);
+        $serverpassword = $decrypted_password_result['password'];
+
+        if (empty($serverip) || empty($serverusername) || empty($serverpassword)) {
+            throw new Exception("Proxmox server connection details are missing or incomplete.");
+        }
+
+        $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+        if (!$proxmox->login()) {
+            throw new Exception("Failed to connect to Proxmox server. Please check credentials.");
+        }
+
+        $nodes = $proxmox->get_node_list();
+        if (empty($nodes)) {
+            throw new Exception("No nodes found on Proxmox server.");
+        }
+        $first_node = $nodes[0];
+
+        $guest_db_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $serviceid)->first();
+        if (!$guest_db_info) {
+            throw new Exception("VM not found in module database.");
+        }
+        $vtype = $guest_db_info->vtype; // qemu or lxc
+
+        if ($vtype !== 'qemu') {
+            throw new Exception("Kernel/loader configuration is only applicable to QEMU/KVM virtual machines.");
+        }
+
+        $config_params = [
+            'ostype' => $new_ostype_setting,
+            'bios' => $new_bios_setting,
+        ];
+
+        // Handle EFIDISK for OVMF
+        if ($new_bios_setting == 'ovmf') {
+            $current_config = $proxmox->get("/nodes/{$first_node}/{$vtype}/{$serviceid}/config");
+            if (!isset($current_config['efidisk0'])) {
+                // Attempt to add efidisk0 - this is a simplified approach.
+                // Proxmox usually requires specifying the storage and format.
+                // Example: 'local-lvm:1,format=raw,efitype=4m,pre-enrolled-keys=1'
+                // This part might need more robust logic to find suitable storage or make it configurable.
+                // For now, we'll try a common pattern; this might fail if 'local-lvm' isn't suitable or available.
+                // A better solution would involve admin configuration for EFI disk storage.
+                // $config_params['efidisk0'] = 'local-lvm:1,efitype=4m,pre-enrolled-keys=1';
+                // For safety and to avoid breaking VMs, we will NOT attempt to auto-add efidisk0 without proper storage detection.
+                // The user/admin should ensure OVMF compatible template or manual EFI disk setup if this module doesn't handle it.
+                // We will only set bios and ostype. Proxmox might auto-create efidisk on some setups or error if not.
+            }
+        }
+
+
+        $update_response = $proxmox->post("/nodes/{$first_node}/{$vtype}/{$serviceid}/config", $config_params);
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' (update_config)', "/nodes/{$first_node}/{$vtype}/{$serviceid}/config " . json_encode($config_params), $update_response);
+
+        if (isset($update_response['errors'])) {
+            throw new Exception("Error updating VM configuration on Proxmox: " . json_encode($update_response['errors']));
+        }
+        if (strpos((string)$update_response, 'UPID:') !== 0 && !empty($update_response)) { // Some PVE versions return UPID, some return empty on success for config update
+             // Check if $update_response is an array and has data (for non-UPID success cases)
+            if(is_array($update_response) && !empty($update_response['data'])){
+                // Potentially successful, proceed
+            } else if (empty($update_response)) {
+                // Empty response can also be success for config updates
+            }
+             else {
+                throw new Exception("Failed to update VM configuration. Unexpected response: " . json_encode($update_response));
+            }
+        }
+
+
+        // Update local WHMCS database
+        Capsule::table('mod_pvewhmcs_vms')->where('id', $serviceid)->update(['ostype' => $new_ostype_setting]);
+
+        // Trigger reboot
+        $reboot_params = []; // No specific params needed for reboot usually
+        $reboot_response = $proxmox->post("/nodes/{$first_node}/{$vtype}/{$serviceid}/status/reboot", $reboot_params);
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm)', "/nodes/{$first_node}/{$vtype}/{$serviceid}/status/reboot", $reboot_response);
+
+        if (isset($reboot_response['errors'])) {
+            // Log reboot error but proceed with success message for config change
+            logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm_error)', "Error rebooting VM: " . json_encode($reboot_response['errors']), '');
+        }
+         if (strpos((string)$reboot_response, 'UPID:') !== 0 && !empty($reboot_response)) {
+            if(is_array($reboot_response) && !empty($reboot_response['data'])){
+                // Potentially successful reboot task started
+            } else if (empty($reboot_response)){
+                // Empty response can be success for reboot task start
+            }
+            else {
+                 logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm_fail)', "Failed to initiate VM reboot. Unexpected response: " . json_encode($reboot_response), '');
+            }
+        }
+
+
+        $message = "Kernel/Loader configuration saved successfully. OS Type set to {$new_ostype_setting}, BIOS set to {$new_bios_setting}. VM is being rebooted.";
+        header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modaction=kernelconfig&kernelconfigmessage=" . urlencode($message));
+
+    } catch (Exception $e) {
+        logModuleCall('pvewhmcs', __FUNCTION__, $selected_os, $e->getMessage() . $e->getTraceAsString());
+        // Regenerate token on error too
+        if (function_exists('generate_token')) {
+            $_SESSION['tkval'] = generate_token('plain');
+        }
+        header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modaction=kernelconfig&kernelconfigerror=" . urlencode("Error: " . $e->getMessage()));
+    }
+    exit;
+}
+
 
 // OUTPUT: Module output to the Client Area
 function pvewhmcs_ClientArea($params) {
@@ -856,8 +1045,9 @@ function pvewhmcs_ClientArea($params) {
 			$vm_status['uptime'] = time2format($vm_status['uptime']);
 			$vm_status['cpu'] = round($vm_status['cpu'] * 100, 2);
 
-			$vm_status['diskusepercent'] = intval($vm_status['disk'] * 100 / $vm_status['maxdisk']);
-			$vm_status['memusepercent'] = intval($vm_status['mem'] * 100 / $vm_status['maxmem']);
+			$vm_status['diskusepercent'] = ($vm_status['maxdisk'] > 0) ? intval($vm_status['disk'] * 100 / $vm_status['maxdisk']) : 0;
+			$vm_status['memusepercent'] = ($vm_status['maxmem'] > 0) ? intval($vm_status['mem'] * 100 / $vm_status['maxmem']) : 0;
+
 
 			if ($guest->vtype == 'lxc') {
 				// Check on swap before setting graph value
@@ -868,109 +1058,124 @@ function pvewhmcs_ClientArea($params) {
 					// Fall back to 0% usage to satisfy chart requirement
 					$vm_status['swapusepercent'] = 0;
 				}
-			}
+			} else { // For QEMU, swap might not be directly reported in the same way or relevant for this graph
+                $vm_status['swapusepercent'] = 0; // Default to 0 for QEMU if not applicable/available
+            }
 		} else {
 	    		// Handle the VM not found in the cluster resources (Optional)
-			echo "VM/CT not found in Cluster Resources.";
+			logModuleCall('pvewhmcs', __FUNCTION__, 'VM/CT not found in Cluster Resources for service ID: ' . $params['serviceid'], '');
+            $vm_status = [ // Provide defaults to prevent errors in template
+                'uptime' => 'N/A',
+                'cpu' => 0,
+                'diskusepercent' => 0,
+                'memusepercent' => 0,
+                'swapusepercent' => 0,
+                'status' => 'unknown',
+            ];
 		}
 
-		// Max CPU usage Yearly
-		$rrd_params = '?timeframe=year&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] . '/rrd' . $rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['year'] = base64_encode($vm_rrd['image']);
+        $vm_statistics = []; // Initialize to ensure it's an array
 
-		// Max CPU usage monthly
-		$rrd_params = '?timeframe=month&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['month'] = base64_encode($vm_rrd['image']);
+        // Populate VM statistics if requested by modaction=vmstats or if original vmStat action was called
+        if (isset($params['modaction']) && $params['modaction'] == 'vmstats' || isset($params['vmStat']) || (isset($_GET['a']) && $_GET['a'] == 'vmStat')) {
+            // Max CPU usage Yearly
+            $rrd_params = '?timeframe=year&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] . '/rrd' . $rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['year'] = base64_encode($vm_rrd['image']);
 
-		// Max CPU usage weekly
-		$rrd_params = '?timeframe=week&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['week'] = base64_encode($vm_rrd['image']);
+            // Max CPU usage monthly
+            $rrd_params = '?timeframe=month&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['month'] = base64_encode($vm_rrd['image']);
 
-		// Max CPU usage daily
-		$rrd_params = '?timeframe=day&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['day'] = base64_encode($vm_rrd['image']);
+            // Max CPU usage weekly
+            $rrd_params = '?timeframe=week&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['week'] = base64_encode($vm_rrd['image']);
 
-		// Max memory Yearly
-		$rrd_params = '?timeframe=year&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['year'] = base64_encode($vm_rrd['image']);
+            // Max CPU usage daily
+            $rrd_params = '?timeframe=day&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['day'] = base64_encode($vm_rrd['image']);
 
-		// Max memory monthly
-		$rrd_params = '?timeframe=month&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['month'] = base64_encode($vm_rrd['image']);
+            // Max memory Yearly
+            $rrd_params = '?timeframe=year&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['year'] = base64_encode($vm_rrd['image']);
 
-		// Max memory weekly
-		$rrd_params = '?timeframe=week&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['week'] = base64_encode($vm_rrd['image']);
+            // Max memory monthly
+            $rrd_params = '?timeframe=month&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['month'] = base64_encode($vm_rrd['image']);
 
-		// Max memory daily
-		$rrd_params = '?timeframe=day&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['day'] = base64_encode($vm_rrd['image']);
+            // Max memory weekly
+            $rrd_params = '?timeframe=week&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['week'] = base64_encode($vm_rrd['image']);
 
-		// Network rate Yearly
-		$rrd_params = '?timeframe=year&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['year'] = base64_encode($vm_rrd['image']);
+            // Max memory daily
+            $rrd_params = '?timeframe=day&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['day'] = base64_encode($vm_rrd['image']);
 
-		// Network rate monthly
-		$rrd_params = '?timeframe=month&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['month'] = base64_encode($vm_rrd['image']);
+            // Network rate Yearly
+            $rrd_params = '?timeframe=year&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['year'] = base64_encode($vm_rrd['image']);
 
-		// Network rate weekly
-		$rrd_params = '?timeframe=week&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['week'] = base64_encode($vm_rrd['image']);
+            // Network rate monthly
+            $rrd_params = '?timeframe=month&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['month'] = base64_encode($vm_rrd['image']);
 
-		// Network rate daily
-		$rrd_params = '?timeframe=day&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['day'] = base64_encode($vm_rrd['image']);
+            // Network rate weekly
+            $rrd_params = '?timeframe=week&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['week'] = base64_encode($vm_rrd['image']);
 
-		// Max IO Yearly
-		$rrd_params = '?timeframe=year&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['year'] = base64_encode($vm_rrd['image']);
+            // Network rate daily
+            $rrd_params = '?timeframe=day&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['day'] = base64_encode($vm_rrd['image']);
 
-		// Max IO monthly
-		$rrd_params = '?timeframe=month&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['month'] = base64_encode($vm_rrd['image']);
+            // Max IO Yearly
+            $rrd_params = '?timeframe=year&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['year'] = base64_encode($vm_rrd['image']);
 
-		// Max IO weekly
-		$rrd_params = '?timeframe=week&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['week'] = base64_encode($vm_rrd['image']);
+            // Max IO monthly
+            $rrd_params = '?timeframe=month&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['month'] = base64_encode($vm_rrd['image']);
 
-		// Max IO daily
-		$rrd_params = '?timeframe=day&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['day'] = base64_encode($vm_rrd['image']);
+            // Max IO weekly
+            $rrd_params = '?timeframe=week&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['week'] = base64_encode($vm_rrd['image']);
 
-		unset($vm_rrd) ;
+            // Max IO daily
+            $rrd_params = '?timeframe=day&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['day'] = base64_encode($vm_rrd['image']);
+
+            unset($vm_rrd);
+        }
 
 		$vm_config['vtype'] = $guest->vtype ;
 		$vm_config['ipv4'] = $guest->ipaddress ;
@@ -984,15 +1189,39 @@ function pvewhmcs_ClientArea($params) {
 		exit;
 	}
 
+    // Ensure CSRF token is available for forms
+    if (function_exists('generate_token')) {
+        // WHMCS typically stores the token in $_SESSION['tkval'] when generate_token is called.
+        // If it's not already set or needs refreshing for this page load:
+        if (empty($_SESSION['tkval'])) {
+            $_SESSION['tkval'] = generate_token('plain');
+        }
+    }
+    // The template uses {$smarty.session.tkval}, which should work if the session variable is set.
+    // Alternatively, pass it directly if Smarty version/config requires it:
+    // $smartyvalues = array('token' => $_SESSION['tkval']); // And merge into 'vars'
+
+    // Initialize $vm_vncproxy if it might not be set to avoid template errors if API login failed earlier
+    if (!isset($vm_vncproxy)) {
+        $vm_vncproxy = null;
+    }
+
+    $template_vars = array(
+        'params' => $params, // serviceid is in $params['serviceid']
+        'vm_config' => $vm_config,
+        'vm_status' => $vm_status,
+        'vm_statistics' => $vm_statistics,
+        'vm_vncproxy' => $vm_vncproxy,
+        'csrf_token' => '', // Default to empty
+    );
+
+    if (function_exists('generate_token')) {
+        $template_vars['csrf_token'] = generate_token('plain');
+    }
+
 	return array(
 		'templatefile' => 'clientarea',
-		'vars' => array(
-			'params' => $params,
-			'vm_config' => $vm_config,
-			'vm_status' => $vm_status,
-			'vm_statistics' => $vm_statistics,
-			'vm_vncproxy' => $vm_vncproxy,
-		),
+		'vars' => $template_vars,
 	);
 }
 

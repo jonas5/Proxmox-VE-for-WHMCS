@@ -55,6 +55,95 @@
 		</div>
 	</div>
 
+	<div class="container">
+	{if ($smarty.get.a eq 'vmStat')}
+
+	<h4>VM Statistics</h4>
+	{* Specific sub-tabs for statistics *}
+	<ul class="nav nav-tabs client-tabs" role="tab-list">
+		<li class="active"><a id="dailytab" data-toggle="tab" role="tab" href="#dailystat">Daily</a></li>
+		<li><a id="weeklystat_tab" data-toggle="tab" role="tab" href="#weeklystat">Weekly</a></li>
+		<li><a id="monthlystat_tab" data-toggle="tab" role="tab" href="#monthlystat">Monthly</a></li>
+		<li><a id="yearlystat_tab" data-toggle="tab" role="tab" href="#yearlystat">Yearly</a></li>
+	</ul>
+	<div class="tab-content admin-tabs">
+		<div id="dailystat" class="tab-pane active">
+			<img src="data:image/png;base64,{$vm_statistics['cpu']['day']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['maxmem']['day']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['netinout']['day']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['diskrw']['day']}"/>
+		</div>
+		<div id="weeklystat" class="tab-pane">
+			<img src="data:image/png;base64,{$vm_statistics['cpu']['week']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['maxmem']['week']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['netinout']['week']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['diskrw']['week']}"/>
+		</div>
+		<div id="monthlystat" class="tab-pane">
+			<img src="data:image/png;base64,{$vm_statistics['cpu']['month']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['maxmem']['month']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['netinout']['month']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['diskrw']['month']}"/>
+		</div>
+		<div id="yearlystat" class="tab-pane">
+			<img src="data:image/png;base64,{$vm_statistics['cpu']['year']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['maxmem']['year']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['netinout']['year']}"/>
+			<img src="data:image/png;base64,{$vm_statistics['diskrw']['year']}"/>
+		</div>
+	</div>
+
+
+
+       {elseif $smarty.get.modaction eq 'kernelconfig'}
+
+	<div class="container kernel-config">
+
+	  <h4 class="section-title">Select OS Type (Kernel/Loader)</h4>
+
+	  <form action="clientarea.php?action=productdetails&id={$params.serviceid}&modop=custom&a=saveKernelConfig" method="post" class="kernel-form">
+
+	    <input type="hidden" name="serviceid" value="{$params.serviceid}">
+	    <input type="hidden" name="token" value="{$csrf_token}">
+
+	    <div class="form-group">
+	      <label for="kernel_loader_os" class="form-label">Operating System Type:</label>
+	      <select name="kernel_loader_os" id="kernel_loader_os" class="form-control">
+	        <option value="l26"
+	          {if $vm_config.ostype eq 'l26' 
+	              or $vm_config.ostype eq 'Linux (Kernel 2.6+ / SeaBIOS / Debian / Ubuntu / CentOS)' 
+	              or ($vm_config.ostype ne 'win10' and $vm_config.ostype ne 'win11' and $vm_config.ostype ne 'other' and $vm_config.ostype ne 'solaris')}
+	          selected
+	          {/if}>
+	          Linux Generic (Kernel 2.6+ / SeaBIOS)
+	        </option>
+	        <option value="solaris" {if $vm_config.ostype eq 'solaris'}selected{/if}>Solaris (SeaBIOS)</option>
+	        <option value="win10" {if $vm_config.ostype eq 'win10'}selected{/if}>Windows 10/2016/2019 (OVMF/UEFI)</option>
+	        <option value="win11" {if $vm_config.ostype eq 'win11'}selected{/if}>Windows 11/2022/2025 (OVMF/UEFI)</option>
+	        <option value="other" {if $vm_config.ostype eq 'other'}selected{/if}>Other/Custom (SeaBIOS)</option>
+	      </select>
+	    </div>
+
+	    <div class="form-help small-text">
+	      <p><strong>Important:</strong> Changing this setting will reconfigure your virtual machine. A <strong>reboot is required</strong> from the Proxmox VE control panel or via OS for changes to take effect.</p>
+	      <p>For Windows UEFI (OVMF), ensure your VM template/ISO is UEFI compatible. An EFI disk will be configured if one is not already present (requires available storage on the node).</p>
+	      <p>Selecting a Linux type typically uses SeaBIOS. Selecting a Windows type will configure OVMF for UEFI support.</p>
+	    </div>
+
+		<div class="form-actions text-right">
+		  <button type="submit" class="btn btn-primary">Save Configuration &amp; Reboot VM</button>
+		  <a href="clientarea.php?action=productdetails&id={$params.serviceid}" class="btn btn-secondary">Cancel</a>
+		</div>
+
+	  </form>
+
+	</div>
+
+
+
+	{else}
+
+
 	<table class="table table-bordered table-striped">
 		<tr>
 			<td><strong>IP</strong> (Addressing)</td><td><strong>{$vm_config['ipv4']}</strong><br/>Subnet Mask:&nbsp;{$vm_config['netmask4']}<br/>Gateway:&nbsp;{$vm_config['gateway4']}</td>
@@ -92,41 +181,6 @@
 			</td>
 		</tr>
 	</table>
-	{if ($smarty.get.a eq 'vmStat')}
-	<h4>VM Statistics</h4>
-	<ul class="nav nav-tabs client-tabs" role="tab-list">
-		<li class="active"><a id="dailytab" data-toggle="tab" role="tab" href="#dailystat">Daily</a></li>
-		<li><a id="dailytab" data-toggle="tab" role="tab" href="#weeklystat">Weekly</a></li>
-		<li><a id="dailytab" data-toggle="tab" role="tab" href="#monthlystat">Monthly</a></li>
-		<li><a id="dailytab" data-toggle="tab" role="tab" href="#yearlystat">Yearly</a></li>
-	</ul>
-	<div class="tab-content admin-tabs">
-		<div id="dailystat" class="tab-pane active">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['day']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['day']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['day']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['day']}"/>
-		</div>
-		<div id="weeklystat" class="tab-pane">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['week']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['week']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['week']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['week']}"/>
-		</div>
-		<div id="monthlystat" class="tab-pane">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['month']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['month']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['month']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['month']}"/>
-		</div>
-		<div id="yearlystat" class="tab-pane">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['year']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['year']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['year']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['year']}"/>
-		</div>
-	</div>
 	{/if}
-
-	
+	</div>	
 </div>

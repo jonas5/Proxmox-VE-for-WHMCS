@@ -48,6 +48,9 @@
 
     <script type="module" crossorigin="anonymous" src="app/error-handler.js"></script>
 
+<script src="app/ui.js"></script>
+
+
     <script type="module">
         import UI from "./app/ui.js";
         import * as Log from './core/util/logging.js';
@@ -85,7 +88,7 @@
 
         // You can also override any defaults you need here:
         //
-        // defaults['host'] = 'vnc.example.com';
+        //defaults['host'] = '';
 
         // Or force a specific setting, preventing the user from
         // changing it:
@@ -97,6 +100,21 @@
         UI.start({ settings: { defaults: defaults,
                                mandatory: mandatory } });
     </script>
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Proxmox noVNC Console</title>
+  <style>
+    html, body, #screen {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+    }
+  </style>
 </head>
 
 <body>

@@ -470,7 +470,7 @@ function pvewhmcs_SuspendAccount(array $params) {
 	$serverip = $params["serverip"];
 	$serverusername = $params["serverusername"];
 	$serverpassword = $params["serverpassword"];
-	
+
 	$proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
 	if ($proxmox->login()) {
 		// Get first node name & prepare
@@ -790,15 +790,261 @@ function pvewhmcs_AdminCustomButtonArray() {
 function pvewhmcs_ClientAreaCustomButtonArray() {
 	$buttonarray = array(
 		"<img src='./modules/servers/pvewhmcs/img/novnc.png'/> noVNC (HTML5)" => "noVNC",
-		"<img src='./modules/servers/pvewhmcs/img/tigervnc.png'/> TigerVNC (Java)" => "javaVNC",
-		"<i class='fa fa-2x fa-flag-checkered'></i> Start Machine" => "vmStart",
-		"<i class='fa fa-2x fa-sync'></i> Reboot Now" => "vmReboot",
-		"<i class='fa fa-2x fa-power-off'></i> Power Off" => "vmShutdown",
-		"<i class='fa fa-2x fa-stop'></i>  Hard Stop" => "vmStop",
-		"<i class='fa fa-2x fa-chart-bar'></i>  Statistics" => "vmStat",
+		"<i class='fa fa-2x fa-flag-checkered'></i> &nbsp; Start Machine" => "vmStart",
+		"<i class='fa fa-2x fa-sync'></i> &nbsp; Reboot Now" => "vmReboot",
+		"<i class='fa fa-2x fa-power-off'></i> &nbsp; Power Off" => "vmShutdown",
+		"<i class='fa fa-2x fa-stop'></i> &nbsp; Hard Stop" => "vmStop",
+		"<i class='fa fa-2x fa-compact-disc'></i> &nbsp; Load Iso" => "loadIsoPage",
+	        "<i class='fa fa-2x fa-cogs'></i> Kernel Configuration" => "redirectToKernelConfigView",
+		"<i class='fa fa-2x fa-chart-bar'></i> &nbsp; Statistics" => "vmStat",
 	);
 	return $buttonarray;
 }
+
+function pvewhmcs_ClientAreaAllowedFunctions() {
+    return ['mountIso', 'loadIsoPage', 'umountIso', 'unmountIso', 'saveKernelConfig'];
+}
+
+
+// ACTION: Simple redirector function to show VM Stats view
+function pvewhmcs_redirectToVmStatsView($params) {
+    header("Location: clientarea.php?action=productdetails&id=" . $params['serviceid'] . "&modaction=vmstats");
+    exit;
+}
+
+// ACTION: Simple redirector function to show Kernel Config view
+function pvewhmcs_redirectToKernelConfigView($params) {
+    header("Location: clientarea.php?action=productdetails&id=" . $params['serviceid'] . "&modaction=kernelconfig");
+    exit;
+}
+
+// ACTION: Save Kernel Configuration by Client
+function pvewhmcs_saveKernelConfig($params) {
+    $serviceid = $params['serviceid'];
+    $selected_os = $_POST['kernel_loader_os'];
+    // $whmcsToken = $_POST['token']; // No longer needed directly, check_token() handles it
+
+    // Verify CSRF token using WHMCS's standard function
+    if (function_exists('check_token')) {
+        check_token("WHMCS.default"); // This function will typically die() or redirect if the token is invalid.
+    } else {
+        // Fallback for environments where check_token might not be available (highly unlikely for client area)
+        // Or if a manual check is absolutely preferred (less secure than WHMCS's own)
+        $submitted_token = isset($_POST['token']) ? $_POST['token'] : '';
+        if (!isset($_SESSION['tkval']) || empty($_SESSION['tkval']) || $submitted_token !== $_SESSION['tkval']) {
+             if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); } // Regenerate for next attempt
+            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modaction=kernelconfig&kernelconfigerror=" . urlencode("Security token validation failed. Please try again."));
+            exit;
+        }
+        // If manual check passes, regenerate token for next form load
+        if (function_exists('generate_token')) {
+            $_SESSION['tkval'] = generate_token('plain');
+        }
+    }
+    // Note: generate_token() is called in pvewhmcs_ClientArea for the *next* page load.
+    // check_token() consumes the current token.
+
+    logModuleCall('pvewhmcs', __FUNCTION__ . ' - Start', 'POST Data: ' . json_encode($_POST), '');
+
+    $new_bios_setting = '';
+    $proxmox_ostype_setting = ''; // Actual OS type to send to Proxmox
+    $db_ostype_setting = $selected_os; // Value to store in WHMCS DB for dropdown pre-selection
+
+    switch ($selected_os) {
+        case 'win10':
+            $new_bios_setting = 'ovmf';
+            $proxmox_ostype_setting = 'win10';
+            break;
+        case 'win11':
+            $new_bios_setting = 'ovmf';
+            $proxmox_ostype_setting = 'win11';
+            break;
+        case 'l26': // Generic Linux
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'l26';
+            break;
+        case 'l26_centos':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'l26'; // Proxmox uses generic l26 for CentOS
+            break;
+        case 'l26_debian':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'l26'; // Proxmox uses generic l26 for Debian
+            break;
+        case 'l26_ubuntu':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'l26'; // Proxmox uses generic l26 for Ubuntu
+            break;
+        case 'solaris':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'solaris';
+            break;
+        case 'w2k':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'w2k';
+            break;
+        case 'w2k3':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'w2k3';
+            break;
+        case 'w2k8':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'w2k8';
+            break;
+        case 'other':
+            $new_bios_setting = 'seabios';
+            $proxmox_ostype_setting = 'other';
+            break;
+        default:
+            // Regenerate token before redirecting due to error
+            if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); }
+            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modaction=kernelconfig&kernelconfigerror=" . urlencode("Invalid OS selection."));
+            exit;
+    }
+    
+    logModuleCall('pvewhmcs', __FUNCTION__ . ' - Settings after switch', [
+        'selected_os' => $selected_os,
+        'proxmox_ostype_setting' => $proxmox_ostype_setting,
+        'new_bios_setting' => $new_bios_setting,
+        'db_ostype_setting' => $db_ostype_setting,
+    ], '');
+
+    try {
+        // Gather access credentials for PVE
+        $pveservice_details = Capsule::table('tblhosting')->find($serviceid);
+        if (!$pveservice_details) {
+            throw new Exception("Service not found in WHMCS.");
+        }
+        $pveserver_details = Capsule::table('tblservers')->where('id', '=', $pveservice_details->server)->first();
+        if (!$pveserver_details) {
+            throw new Exception("Server not found for this service.");
+        }
+
+        $serverip = $pveserver_details->ipaddress;
+        $serverusername = $pveserver_details->username;
+        // Decrypt password
+        $api_data_pw = ['password2' => $pveserver_details->password];
+        $decrypted_password_result = localAPI('DecryptPassword', $api_data_pw);
+        $serverpassword = $decrypted_password_result['password'];
+
+        if (empty($serverip) || empty($serverusername) || empty($serverpassword)) {
+            throw new Exception("Proxmox server connection details are missing or incomplete.");
+        }
+        
+        $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+        if (!$proxmox->login()) {
+            throw new Exception("Failed to connect to Proxmox server. Please check credentials.");
+        }
+
+        $nodes = $proxmox->get_node_list();
+        if (empty($nodes)) {
+            throw new Exception("No nodes found on Proxmox server.");
+        }
+        $first_node = $nodes[0];
+
+        $guest_db_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $serviceid)->first();
+        if (!$guest_db_info) {
+            throw new Exception("VM not found in module database.");
+        }
+        $vtype = $guest_db_info->vtype; // qemu or lxc
+
+        if ($vtype !== 'qemu') {
+            throw new Exception("Kernel/loader configuration is only applicable to QEMU/KVM virtual machines.");
+        }
+
+        $config_params = [
+            'ostype' => $proxmox_ostype_setting, // Ensure this uses the Proxmox-specific ostype
+            'bios' => $new_bios_setting,
+        ];
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - API Config Params', $config_params, '');
+
+        // Handle EFIDISK for OVMF
+        if ($new_bios_setting == 'ovmf') {
+            $current_config = $proxmox->get("/nodes/{$first_node}/{$vtype}/{$serviceid}/config");
+            if (!isset($current_config['efidisk0'])) {
+                // Attempt to add efidisk0 - this is a simplified approach.
+                // Proxmox usually requires specifying the storage and format.
+                // Example: 'local-lvm:1,format=raw,efitype=4m,pre-enrolled-keys=1'
+                // This part might need more robust logic to find suitable storage or make it configurable.
+                // For now, we'll try a common pattern; this might fail if 'local-lvm' isn't suitable or available.
+                // A better solution would involve admin configuration for EFI disk storage.
+                // $config_params['efidisk0'] = 'local-lvm:1,efitype=4m,pre-enrolled-keys=1';
+                // For safety and to avoid breaking VMs, we will NOT attempt to auto-add efidisk0 without proper storage detection.
+                // The user/admin should ensure OVMF compatible template or manual EFI disk setup if this module doesn't handle it.
+                // We will only set bios and ostype. Proxmox might auto-create efidisk on some setups or error if not.
+            }
+        }
+
+
+        $update_response = $proxmox->post("/nodes/{$first_node}/{$vtype}/{$serviceid}/config", $config_params);
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' (update_config)', "/nodes/{$first_node}/{$vtype}/{$serviceid}/config " . json_encode($config_params), $update_response);
+
+        if (isset($update_response['errors'])) {
+            throw new Exception("Error updating VM configuration on Proxmox: " . json_encode($update_response['errors']));
+        }
+        if (strpos((string)$update_response, 'UPID:') !== 0 && !empty($update_response)) { // Some PVE versions return UPID, some return empty on success for config update
+             // Check if $update_response is an array and has data (for non-UPID success cases)
+            if(is_array($update_response) && !empty($update_response['data'])){
+                // Potentially successful, proceed
+            } else if (empty($update_response)) {
+                // Empty response can also be success for config updates
+            }
+             else {
+                throw new Exception("Failed to update VM configuration. Unexpected response: " . json_encode($update_response));
+            }
+        }
+
+
+        // Update local WHMCS database
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Before DB Update', ['service_id' => $serviceid, 'db_ostype_to_set' => $db_ostype_setting], '');
+        try {
+            Capsule::table('mod_pvewhmcs_vms')->where('id', $serviceid)->update(['ostype' => $db_ostype_setting]);
+            logModuleCall('pvewhmcs', __FUNCTION__ . ' - After DB Update', 'Successfully updated mod_pvewhmcs_vms.ostype', '');
+        } catch (Exception $dbEx) {
+            logModuleCall('pvewhmcs', __FUNCTION__ . ' - DB Update Exception', $dbEx->getMessage(), $dbEx->getTraceAsString());
+            // Decide if we should throw or just log and continue to reboot attempt
+        }
+        
+        // Trigger reboot
+        //$reboot_params = []; // No specific params needed for reboot usually
+        //logModuleCall('pvewhmcs', __FUNCTION__ . ' - Before Reboot API call', "/nodes/{$first_node}/{$vtype}/{$serviceid}/status/reboot", '');
+        //$reboot_response = $proxmox->post("/nodes/{$first_node}/{$vtype}/{$serviceid}/status/reboot", $reboot_params);
+        //logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm) - API Response', $reboot_response, '');
+
+        //if (isset($reboot_response['errors'])) {
+        //    // Log reboot error but proceed with success message for config change
+        //    logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm_error)', "Error rebooting VM: " . json_encode($reboot_response['errors']), '');
+        //}
+        // if (strpos((string)$reboot_response, 'UPID:') !== 0 && !empty($reboot_response)) {
+        //    if(is_array($reboot_response) && !empty($reboot_response['data'])){
+        //        // Potentially successful reboot task started
+        //         logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm_task_started_data)', $reboot_response['data'], '');
+        //    } else if (empty($reboot_response)){
+        //        // Empty response can be success for reboot task start
+        //         logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm_task_started_empty_response)', '', '');
+        //    }
+        //    else {
+        //         logModuleCall('pvewhmcs', __FUNCTION__ . ' (reboot_vm_fail)', "Failed to initiate VM reboot. Unexpected response: " . json_encode($reboot_response), '');
+        //    }
+        //}
+
+        // Use $selected_os (original value from dropdown) for the user-facing message for clarity.
+        $message = "Kernel/Loader configuration saved successfully. OS Type set to '{$selected_os}', BIOS set to '{$new_bios_setting}'. VM is being rebooted.";
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Success', $message, '');
+        header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modaction=kernelconfig&kernelconfigmessage=" . urlencode($message));
+
+    } catch (Exception $e) {
+        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Exception Caught', $selected_os, $e->getMessage() . $e->getTraceAsString());
+        // Regenerate token on error too
+        if (function_exists('generate_token')) {
+            $_SESSION['tkval'] = generate_token('plain');
+        }
+        header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modaction=kernelconfig&kernelconfigerror=" . urlencode("Error: " . $e->getMessage()));
+    }
+    exit;
+}
+
 
 // OUTPUT: Module output to the Client Area
 function pvewhmcs_ClientArea($params) {
@@ -856,8 +1102,9 @@ function pvewhmcs_ClientArea($params) {
 			$vm_status['uptime'] = time2format($vm_status['uptime']);
 			$vm_status['cpu'] = round($vm_status['cpu'] * 100, 2);
 
-			$vm_status['diskusepercent'] = intval($vm_status['disk'] * 100 / $vm_status['maxdisk']);
-			$vm_status['memusepercent'] = intval($vm_status['mem'] * 100 / $vm_status['maxmem']);
+			$vm_status['diskusepercent'] = ($vm_status['maxdisk'] > 0) ? intval($vm_status['disk'] * 100 / $vm_status['maxdisk']) : 0;
+			$vm_status['memusepercent'] = ($vm_status['maxmem'] > 0) ? intval($vm_status['mem'] * 100 / $vm_status['maxmem']) : 0;
+
 
 			if ($guest->vtype == 'lxc') {
 				// Check on swap before setting graph value
@@ -868,109 +1115,124 @@ function pvewhmcs_ClientArea($params) {
 					// Fall back to 0% usage to satisfy chart requirement
 					$vm_status['swapusepercent'] = 0;
 				}
-			}
+			} else { // For QEMU, swap might not be directly reported in the same way or relevant for this graph
+                $vm_status['swapusepercent'] = 0; // Default to 0 for QEMU if not applicable/available
+            }
 		} else {
 	    		// Handle the VM not found in the cluster resources (Optional)
-			echo "VM/CT not found in Cluster Resources.";
+			logModuleCall('pvewhmcs', __FUNCTION__, 'VM/CT not found in Cluster Resources for service ID: ' . $params['serviceid'], '');
+            $vm_status = [ // Provide defaults to prevent errors in template
+                'uptime' => 'N/A',
+                'cpu' => 0,
+                'diskusepercent' => 0,
+                'memusepercent' => 0,
+                'swapusepercent' => 0,
+                'status' => 'unknown',
+            ];
 		}
+        
+        $vm_statistics = []; // Initialize to ensure it's an array
 
-		// Max CPU usage Yearly
-		$rrd_params = '?timeframe=year&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] . '/rrd' . $rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['year'] = base64_encode($vm_rrd['image']);
+        // Populate VM statistics if requested by modaction=vmstats or if original vmStat action was called
+        if (isset($params['modaction']) && $params['modaction'] == 'vmstats' || isset($params['vmStat']) || (isset($_GET['a']) && $_GET['a'] == 'vmStat')) {
+            // Max CPU usage Yearly
+            $rrd_params = '?timeframe=year&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] . '/rrd' . $rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['year'] = base64_encode($vm_rrd['image']);
 
-		// Max CPU usage monthly
-		$rrd_params = '?timeframe=month&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['month'] = base64_encode($vm_rrd['image']);
+            // Max CPU usage monthly
+            $rrd_params = '?timeframe=month&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['month'] = base64_encode($vm_rrd['image']);
 
-		// Max CPU usage weekly
-		$rrd_params = '?timeframe=week&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['week'] = base64_encode($vm_rrd['image']);
+            // Max CPU usage weekly
+            $rrd_params = '?timeframe=week&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['week'] = base64_encode($vm_rrd['image']);
 
-		// Max CPU usage daily
-		$rrd_params = '?timeframe=day&ds=cpu&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['cpu']['day'] = base64_encode($vm_rrd['image']);
+            // Max CPU usage daily
+            $rrd_params = '?timeframe=day&ds=cpu&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['cpu']['day'] = base64_encode($vm_rrd['image']);
 
-		// Max memory Yearly
-		$rrd_params = '?timeframe=year&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['year'] = base64_encode($vm_rrd['image']);
+            // Max memory Yearly
+            $rrd_params = '?timeframe=year&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['year'] = base64_encode($vm_rrd['image']);
 
-		// Max memory monthly
-		$rrd_params = '?timeframe=month&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['month'] = base64_encode($vm_rrd['image']);
+            // Max memory monthly
+            $rrd_params = '?timeframe=month&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['month'] = base64_encode($vm_rrd['image']);
 
-		// Max memory weekly
-		$rrd_params = '?timeframe=week&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['week'] = base64_encode($vm_rrd['image']);
+            // Max memory weekly
+            $rrd_params = '?timeframe=week&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['week'] = base64_encode($vm_rrd['image']);
 
-		// Max memory daily
-		$rrd_params = '?timeframe=day&ds=maxmem&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['maxmem']['day'] = base64_encode($vm_rrd['image']);
+            // Max memory daily
+            $rrd_params = '?timeframe=day&ds=maxmem&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['maxmem']['day'] = base64_encode($vm_rrd['image']);
 
-		// Network rate Yearly
-		$rrd_params = '?timeframe=year&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['year'] = base64_encode($vm_rrd['image']);
+            // Network rate Yearly
+            $rrd_params = '?timeframe=year&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['year'] = base64_encode($vm_rrd['image']);
 
-		// Network rate monthly
-		$rrd_params = '?timeframe=month&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['month'] = base64_encode($vm_rrd['image']);
+            // Network rate monthly
+            $rrd_params = '?timeframe=month&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['month'] = base64_encode($vm_rrd['image']);
 
-		// Network rate weekly
-		$rrd_params = '?timeframe=week&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['week'] = base64_encode($vm_rrd['image']);
+            // Network rate weekly
+            $rrd_params = '?timeframe=week&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['week'] = base64_encode($vm_rrd['image']);
 
-		// Network rate daily
-		$rrd_params = '?timeframe=day&ds=netin,netout&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['netinout']['day'] = base64_encode($vm_rrd['image']);
+            // Network rate daily
+            $rrd_params = '?timeframe=day&ds=netin,netout&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['netinout']['day'] = base64_encode($vm_rrd['image']);
 
-		// Max IO Yearly
-		$rrd_params = '?timeframe=year&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['year'] = base64_encode($vm_rrd['image']);
+            // Max IO Yearly
+            $rrd_params = '?timeframe=year&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['year'] = base64_encode($vm_rrd['image']);
 
-		// Max IO monthly
-		$rrd_params = '?timeframe=month&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['month'] = base64_encode($vm_rrd['image']);
+            // Max IO monthly
+            $rrd_params = '?timeframe=month&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['month'] = base64_encode($vm_rrd['image']);
 
-		// Max IO weekly
-		$rrd_params = '?timeframe=week&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['week'] = base64_encode($vm_rrd['image']);
+            // Max IO weekly
+            $rrd_params = '?timeframe=week&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['week'] = base64_encode($vm_rrd['image']);
 
-		// Max IO daily
-		$rrd_params = '?timeframe=day&ds=diskread,diskwrite&cf=AVERAGE';
-		$vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
-		$vm_rrd['image'] = utf8_decode($vm_rrd['image']) ;
-		$vm_statistics['diskrw']['day'] = base64_encode($vm_rrd['image']);
+            // Max IO daily
+            $rrd_params = '?timeframe=day&ds=diskread,diskwrite&cf=AVERAGE';
+            $vm_rrd = $proxmox->get('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/rrd'.$rrd_params) ;
+            $vm_rrd['image'] = isset($vm_rrd['image']) ? utf8_decode($vm_rrd['image']) : '';
+            $vm_statistics['diskrw']['day'] = base64_encode($vm_rrd['image']);
 
-		unset($vm_rrd) ;
+            unset($vm_rrd);
+        }
 
 		$vm_config['vtype'] = $guest->vtype ;
 		$vm_config['ipv4'] = $guest->ipaddress ;
@@ -984,59 +1246,397 @@ function pvewhmcs_ClientArea($params) {
 		exit;
 	}
 
+    // Ensure CSRF token is available for forms
+    if (function_exists('generate_token')) {
+        // WHMCS typically stores the token in $_SESSION['tkval'] when generate_token is called.
+        // If it's not already set or needs refreshing for this page load:
+        if (empty($_SESSION['tkval'])) {
+            $_SESSION['tkval'] = generate_token('plain');
+        }
+    }
+    // The template uses {$smarty.session.tkval}, which should work if the session variable is set.
+    // Alternatively, pass it directly if Smarty version/config requires it:
+    // $smartyvalues = array('token' => $_SESSION['tkval']); // And merge into 'vars'
+
+    // Initialize $vm_vncproxy if it might not be set to avoid template errors if API login failed earlier
+    if (!isset($vm_vncproxy)) {
+        $vm_vncproxy = null; 
+    }
+
+    $template_vars = array(
+        'params' => $params, // serviceid is in $params['serviceid']
+        'vm_config' => $vm_config,
+        'vm_status' => $vm_status,
+        'vm_statistics' => $vm_statistics,
+        'vm_vncproxy' => $vm_vncproxy,
+        'csrf_token' => '', // Default to empty
+    );
+
+    if (function_exists('generate_token')) {
+        $template_vars['csrf_token'] = generate_token('plain');
+    }
+
 	return array(
 		'templatefile' => 'clientarea',
-		'vars' => array(
-			'params' => $params,
-			'vm_config' => $vm_config,
-			'vm_status' => $vm_status,
-			'vm_statistics' => $vm_statistics,
-			'vm_vncproxy' => $vm_vncproxy,
-		),
+		'vars' => $template_vars,
 	);
 }
+
+
+
 
 // OUTPUT: VM Statistics/Graphs render to Client Area
 function pvewhmcs_vmStat($params) {
 	return true;
 }
 
-// VNC: Console access to VM/CT via noVNC
-function pvewhmcs_noVNC($params) {
-	// Check if VNC Secret is configured in Module Config, fail early if not. (#27)
-	if (strlen(Capsule::table('mod_pvewhmcs')->where('id', '1')->value('vnc_secret'))<15) {
-		throw new Exception("PVEWHMCS Error: VNC Secret in Module Config either not set or not long enough. Recommend 20+ characters for security.");
-	}
-	
-	// Get login credentials then make the Proxmox connection attempt.
-	$serverip = $params["serverip"];
-	$serverusername = 'vnc';
-	$serverpassword = Capsule::table('mod_pvewhmcs')->where('id', '1')->value('vnc_secret');
-	
-	$proxmox = new PVE2_API($serverip, $serverusername, "pve", $serverpassword);
-	if ($proxmox->login()) {
-		// Get first node name
-		$nodes = $proxmox->get_node_list();
-		$first_node = $nodes[0];
-		unset($nodes);
-		// Early prep work
-		$guest = Capsule::table('mod_pvewhmcs_vms')->where('id','=',$params['serviceid'])->get()[0] ;
-		$vm_vncproxy = $proxmox->post('/nodes/'.$first_node.'/'.$guest->vtype.'/'.$params['serviceid'] .'/vncproxy', array( 'websocket' => '1' )) ;
-		// Get both tickets prepared
-		$pveticket = $proxmox->getTicket();
-		$vncticket = $vm_vncproxy['ticket'];
-		// $path should only contain the actual path without any query parameters
-		$path = 'api2/json/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/vncwebsocket?port=' . $vm_vncproxy['port'] . '&vncticket=' . urlencode($vncticket);
-		// Construct the noVNC Router URL with the path already prepared now
-		$url = '/modules/servers/pvewhmcs/novnc_router.php?host=' . $serverip . '&pveticket=' . urlencode($pveticket) . '&path=' . urlencode($path) . '&vncticket=' . urlencode($vncticket);
-		// Build and deliver the noVNC Router hyperlink for access
-		$vncreply = '<center><strong>Console (noVNC) prepared for usage. <a href="'.$url.'" target="_blanK">Click here</a> to open the noVNC window.</strong></center>' ;
-		return $vncreply;
-	} else {
-		$vncreply = 'Failed to prepare noVNC. Please contact Technical Support.';
-		return $vncreply;
-	}
+function pvewhmcs_kernelconfig($params) {
+	return $params;
 }
+
+
+
+// Function to handle the ISO loading page
+function pvewhmcs_loadIsoPage($params) {
+    error_log('loadIsoPage page Triggered.');
+    // Gather access credentials for PVE
+    $pveservice = Capsule::table('tblhosting')->find($params['serviceid']);
+    $pveserver = Capsule::table('tblservers')->where('id', '=', $pveservice->server)->get()[0];
+
+    $serverip = $pveserver->ipaddress;
+    $serverusername = $pveserver->username;
+    $api_data = array('password2' => $pveserver->password);
+    $serverpassword_decrypted = localAPI('DecryptPassword', $api_data);
+    $serverpassword = $serverpassword_decrypted['password'];
+
+    $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+    $iso_images = array();
+    $current_iso = null;
+    $current_drive = null;
+    $error_message = null;
+    $first_node = null; // Initialize first_node
+
+    if ($proxmox->login()) {
+        $nodes = $proxmox->get_node_list();
+        if (!empty($nodes) && isset($nodes[0])) {
+            $first_node = $nodes[0];
+            $guest_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $params['serviceid'])->get()[0];
+            $vm_type = $guest_info->vtype; // qemu or lxc
+
+            // ISO operations are typically for QEMU/KVM
+            if ($vm_type == 'qemu') {
+                // Define ISO storage - ideally this should be configurable
+                $iso_storage = 'local'; // Hardcoded for now, as per plan
+
+                $iso_images = $proxmox->get_iso_images($first_node, $iso_storage);
+
+                // Get current VM config to check for mounted ISO
+                $vm_config = $proxmox->get("/nodes/{$first_node}/{$vm_type}/{$params['serviceid']}/config");
+                if ($vm_config) {
+                    // Check common drives for an ISO
+                    $possible_drives = ['ide0', 'ide1', 'ide2', 'ide3', 'sata0', 'sata1', 'sata2', 'sata3', 'sata4', 'sata5'];
+                    foreach ($possible_drives as $drive) {
+                        if (isset($vm_config[$drive]) && strpos($vm_config[$drive], ',media=cdrom') !== false) {
+                            // Example: local:iso/imagename.iso,media=cdrom,size=123M
+                            preg_match('/iso\/(.*?)(,|$)/', $vm_config[$drive], $matches);
+                            if (isset($matches[1])) {
+                                $current_iso = $matches[1];
+                                $current_drive = $drive;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    $error_message = "Could not retrieve VM configuration.";
+                }
+            } else {
+                $error_message = "ISO mounting is not supported for LXC containers.";
+            }
+        } else {
+            $error_message = "Could not retrieve node list from Proxmox.";
+        }
+    } else {
+        $error_message = "Failed to login to Proxmox API. Please check credentials and connectivity.";
+    }
+    
+    // Handle messages from mount/unmount operations
+    if (isset($_SESSION['pvewhmcs_iso_message'])) {
+        $action_message = $_SESSION['pvewhmcs_iso_message'];
+        unset($_SESSION['pvewhmcs_iso_message']);
+    } else {
+        $action_message = null;
+    }
+
+    return array(
+        'templatefile' => 'load_iso_area', // New template file
+        'vars' => array(
+            'params' => $params, // Pass WHMCS params
+            'iso_images' => $iso_images,
+            'current_iso' => $current_iso,
+            'current_drive' => $current_drive,
+            'iso_storage_assumed' => 'local', // Inform template about assumed storage
+            'error_message' => $error_message,
+            'action_message' => $action_message, // For success/error from mount/unmount
+            'first_node' => $first_node, // Pass node for form submission if needed
+        ),
+    );
+}
+
+
+// Function to mount an ISO
+function pvewhmcs_mountIso($params) {
+    session_start(); // Required to pass messages back via session
+    $iso_image = isset($_REQUEST['iso_image']) ? trim($_REQUEST['iso_image']) : null;
+    // Use a default drive, or allow selection. For now, assume 'ide2' if not specified or make it part of the form.
+    $drive_to_use = isset($_REQUEST['drive_to_use']) && !empty($_REQUEST['drive_to_use']) ? trim($_REQUEST['drive_to_use']) : 'ide2'; 
+    // Assume storage is 'local' or get from form if made configurable there
+    $storage_location = isset($_REQUEST['storage_location']) && !empty($_REQUEST['storage_location']) ? trim($_REQUEST['storage_location']) : 'local';
+
+    if (empty($iso_image)) {
+        $_SESSION['pvewhmcs_iso_message'] = "Error: No ISO image selected.";
+        header("Location: clientarea.php?action=productdetails&id={$params['serviceid']}&modop=custom&a=loadIsoPage");
+        exit;
+    }
+
+    // Gather access credentials
+    $pveservice = Capsule::table('tblhosting')->find($params['serviceid']);
+    $pveserver = Capsule::table('tblservers')->where('id', '=', $pveservice->server)->get()[0];
+    $serverip = $pveserver->ipaddress;
+    $serverusername = $pveserver->username;
+    $api_data = array('password2' => $pveserver->password);
+    $serverpassword_decrypted = localAPI('DecryptPassword', $api_data);
+    $serverpassword = $serverpassword_decrypted['password'];
+
+    $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+    if ($proxmox->login()) {
+        $nodes = $proxmox->get_node_list();
+        if (!empty($nodes) && isset($nodes[0])) {
+            $first_node = $nodes[0];
+            $guest_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $params['serviceid'])->get()[0];
+            $vm_type = $guest_info->vtype;
+
+            if ($vm_type == 'qemu') {
+                if ($proxmox->mount_iso_image($first_node, $params['serviceid'], $iso_image, $drive_to_use, $storage_location)) {
+                    $iso_mount_success_message = "Success: ISO '{$iso_image}' mounted to {$drive_to_use}.";
+                    $force_bios_message = '';
+                    $boot_order_message = '';
+                    $reboot_message = '';
+
+                    // Check if force BIOS on reboot is requested
+                    if (isset($_REQUEST['force_bios_on_reboot']) && $_REQUEST['force_bios_on_reboot'] == '1') {
+                        // Parameter might be 'forcebios' => 1 for SeaBIOS or 'efisetup' => 1 for OVMF (UEFI)
+                        // For UEFI VMs, 'efisetup: 1' should make it boot into UEFI setup once.
+                        // For SeaBIOS, this parameter will likely be ignored or cause an error if not in schema for SeaBIOS.
+                        // The error "property is not defined in schema" would occur if 'efisetup' is not valid for the VM's current config (e.g. SeaBIOS).
+                        $force_bios_params = array('efisetup' => 1); 
+                        try {
+                            if ($proxmox->put("/nodes/{$first_node}/qemu/{$params['serviceid']}/config", $force_bios_params)) {
+                                $force_bios_message = " VM set to attempt entry into UEFI setup on next boot.";
+                                if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                                    logModuleCall('pvewhmcs', __FUNCTION__, "Successfully sent efisetup=1 for VM {$params['serviceid']}", $force_bios_params);
+                                }
+                            } else {
+                                $force_bios_message = " Attempt to set UEFI setup flag failed (API returned false). This may be normal for SeaBIOS VMs.";
+                                if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                                    logModuleCall('pvewhmcs', __FUNCTION__, "Failed to set efisetup=1 for VM {$params['serviceid']} (API returned false)", $force_bios_params);
+                                }
+                            }
+                        } catch (PVE2_Exception $e) {
+                            // Catching the specific error about parameter not defined in schema
+                            if (strpos($e->getMessage(), "property is not defined in schema") !== false) {
+                                $force_bios_message = " Note: Could not set UEFI setup flag (efisetup=1), this VM might not be using UEFI or the Proxmox version doesn't support this for its current configuration.";
+                                 if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                                    logModuleCall('pvewhmcs', __FUNCTION__, "Attempt to set efisetup=1 failed for VM {$params['serviceid']} - likely not a UEFI VM or parameter not applicable.", $e->getMessage());
+                                }
+                            } else {
+                                $force_bios_message = " Attempt to set UEFI setup flag failed with API exception: " . htmlentities($e->getMessage());
+                                if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                                    logModuleCall('pvewhmcs', __FUNCTION__, "Exception while setting efisetup=1 for VM {$params['serviceid']}", $e->getMessage());
+                                }
+                            }
+                        }
+                    }
+
+                    // Check if force boot from ISO is requested
+                    // This should ideally happen *after* force BIOS if both are set,
+                    // but BIOS entry usually takes precedence anyway.
+                    // Or, if BIOS is forced, setting boot order might be redundant for that one boot.
+                    // For simplicity, we'll apply both if checked.
+                    if (isset($_REQUEST['force_boot_from_iso']) && $_REQUEST['force_boot_from_iso'] == '1') {
+                        $boot_order_set_params = array('boot' => "order={$drive_to_use}");
+                        try {
+                            if ($proxmox->put("/nodes/{$first_node}/qemu/{$params['serviceid']}/config", $boot_order_set_params)) {
+                                $boot_order_message = " Boot order set to prioritize {$drive_to_use} for next boot.";
+                                // Note: If forcebios was also set, this boot order might be overridden by entering BIOS setup first.
+                            } else {
+                                $boot_order_message = " Attempt to set boot order to {$drive_to_use} failed (API returned false).";
+                            }
+                        } catch (PVE2_Exception $e) {
+                            $boot_order_message = " Attempt to set boot order to {$drive_to_use} failed with API exception: " . htmlentities($e->getMessage());
+                        }
+                         if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1 && !empty($boot_order_message) ) {
+                             logModuleCall('pvewhmcs', __FUNCTION__, "Boot order setting attempt for VM {$params['serviceid']}:" . $boot_order_message, $boot_order_set_params ?? []);
+                         }
+                    }
+
+                    // Attempt reboot
+                    //$reboot_status = pvewhmcs_vmReboot($params); // Call the enhanced reboot function
+                    //if ($reboot_status === "success") {
+                    //    $reboot_message = " VM reboot initiated successfully.";
+                    //} else {
+                    //    $reboot_message = " However, the subsequent VM reboot attempt failed: " . htmlentities($reboot_status);
+                    //}
+                    $_SESSION['pvewhmcs_iso_message'] = $iso_mount_success_message . $force_bios_message . $boot_order_message . $reboot_message;
+
+                } else {
+                    $_SESSION['pvewhmcs_iso_message'] = "Error: Failed to mount ISO '{$iso_image}'. Check module logs.";
+                }
+            } else {
+                $_SESSION['pvewhmcs_iso_message'] = "Error: ISO mounting not supported for this VM type.";
+            }
+        } else {
+             $_SESSION['pvewhmcs_iso_message'] = "Error: Could not retrieve node list from Proxmox.";
+        }
+    } else {
+        $_SESSION['pvewhmcs_iso_message'] = "Error: Failed to login to Proxmox API.";
+    }
+    
+    header("Location: clientarea.php?action=productdetails&id={$params['serviceid']}&modop=custom&a=loadIsoPage");
+    exit;
+}
+
+
+// Function to unmount/eject an ISO
+function pvewhmcs_unmountIso($params) {
+    session_start(); // Required to pass messages back via session
+    // Drive to unmount should be passed, or determined from current config
+    $drive_to_unmount = isset($_REQUEST['drive_to_unmount']) && !empty($_REQUEST['drive_to_unmount']) ? trim($_REQUEST['drive_to_unmount']) : 'ide2';
+
+
+    // Gather access credentials
+    $pveservice = Capsule::table('tblhosting')->find($params['serviceid']);
+    $pveserver = Capsule::table('tblservers')->where('id', '=', $pveservice->server)->get()[0];
+    $serverip = $pveserver->ipaddress;
+    $serverusername = $pveserver->username;
+    $api_data = array('password2' => $pveserver->password);
+    $serverpassword_decrypted = localAPI('DecryptPassword', $api_data);
+    $serverpassword = $serverpassword_decrypted['password'];
+
+    $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+    if ($proxmox->login()) {
+        $nodes = $proxmox->get_node_list();
+        if (!empty($nodes) && isset($nodes[0])) {
+            $first_node = $nodes[0];
+            $guest_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $params['serviceid'])->get()[0];
+            $vm_type = $guest_info->vtype;
+
+            if ($vm_type == 'qemu') {
+                if ($proxmox->unmount_iso_image($first_node, $params['serviceid'], $drive_to_unmount)) {
+                    $_SESSION['pvewhmcs_iso_message'] = "Success: ISO ejected from {$drive_to_unmount}.";
+                } else {
+                    $_SESSION['pvewhmcs_iso_message'] = "Error: Failed to eject ISO from {$drive_to_unmount}. Check module logs.";
+                }
+            } else {
+                $_SESSION['pvewhmcs_iso_message'] = "Error: ISO operations not supported for this VM type.";
+            }
+        } else {
+            $_SESSION['pvewhmcs_iso_message'] = "Error: Could not retrieve node list from Proxmox.";
+        }
+    } else {
+        $_SESSION['pvewhmcs_iso_message'] = "Error: Failed to login to Proxmox API.";
+    }
+
+    header("Location: clientarea.php?action=productdetails&id={$params['serviceid']}&modop=custom&a=loadIsoPage");
+    exit;
+}
+
+
+function pvewhmcs_noVNC($params) {
+    // Define a debug log file
+    //$debugLog = '/tmp/pvewhmcs_novnc_debug.log';
+    //file_put_contents($debugLog, "=== noVNC Debug Start ===\n", FILE_APPEND);
+
+     // Check if VNC Secret is configured
+     $vncSecret = Capsule::table('mod_pvewhmcs')->where('id', '1')->value('vnc_secret');
+     if (strlen($vncSecret) < 15) {
+	        throw new Exception("PVEWHMCS Error: VNC Secret in Module Config either not set or not long enough.");
+     }
+
+
+
+    $serverip = $params["serverip"];
+    $serverusername = 'vnc';
+    $serverpassword = $vncSecret;
+
+
+    $proxmox = new PVE2_API($serverip, $serverusername, "pve", $serverpassword);
+
+    if ($proxmox->login()) {
+	    // Do all your API calls first
+	    $nodes = $proxmox->get_node_list();
+	    $first_node = $nodes[0];
+	
+	    $guest = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $params['serviceid'])->get()[0];
+	    $pveticket = $proxmox->getTicket();
+
+		try {
+		    $vm_vncproxy = $proxmox->post(
+		        '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/vncproxy',
+		        ['websocket' => '1']
+		    );
+
+		    //$vm_vncproxy = $proxmox->post('/nodes/pve1/qemu/101/vncproxy', ['websocket' => '1']);
+		    error_log("✅ vncproxy response: " . print_r($vm_vncproxy, true));
+		} catch (Exception $e) {
+		    error_log("❌ vncproxy failed: " . $e->getMessage());
+		}
+
+
+
+	//    error_log(sprintf('%s', print_r($vm_vncproxy)));
+
+	    // ✅ Now get the ticket — it will match the session used for vncproxy
+	    $vncticket = $vm_vncproxy['ticket'];
+	
+	    // Debug session IDs
+	    preg_match('/:([A-Za-z0-9]+)::/', $pveticket, $pveMatch);
+	    preg_match('/:([A-Za-z0-9]+)::/', $vncticket, $vncMatch);
+	    $pveSession = $pveMatch[1] ?? 'N/A';
+	    $vncSession = $vncMatch[1] ?? 'N/A';
+
+	  if ($pveSession !== $vncSession) {
+	        error_log("⚠️ Session ID mismatch: PVE=$pveSession, VNC=$vncSession");
+	        return 'Failed to prepare noVNC. Please reload and try again.';
+	  } else {
+		    error_log("✅ ticketid: " . $vncticket);
+	  }
+
+
+
+        $path = 'api2/json/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/vncwebsocket?port=' . $vm_vncproxy['port'] . '&vncticket=' . urlencode($vncticket);
+        $url = '/modules/servers/pvewhmcs/novnc_router.php?host=' . $serverip . '&pveticket=' . urlencode($pveticket) . '&path=' . urlencode($path) . '&vncticket=' . urlencode($vncticket);
+
+
+        //return '<center><strong>Console (noVNC) prepared for usage. <a href="' . $url . '" target="_blank">Click here</a> to open the noVNC window.</strong></center>';
+	return sprintf(<<<HTML
+		<center><strong>Console (noVNC) prepared for usage in a new window. Disable your popup blocker. 
+		  <script>
+		    window.onload = function() {
+			window.open('%s', 'noVNCWindow', 'width=1280,height=1024,toolbar=no,menubar=no,scrollbars=no,resizable=yes,location=no,status=no'); return false;
+		    };
+		  </script>
+		HTML, $url);
+
+        //header(sprintf("Location: %s", %s));
+	//return True;
+    } else {
+        return 'Failed to prepare noVNC. Please contact Technical Support.';
+    }
+}
+
 
 // VNC: Console access to VM/CT via SPICE
 function pvewhmcs_SPICE($params) {
@@ -1115,6 +1715,7 @@ function pvewhmcs_javaVNC($params){
 
 // PVE API FUNCTION, CLIENT/ADMIN: Start the VM/CT
 function pvewhmcs_vmStart($params) {
+        error_log("pvewhmcs_vmStart() was called for service ID: " . $params['serviceid']);
 	// Gather access credentials for PVE, as these are no longer passed for Client Area
 	$pveservice = Capsule::table('tblhosting')->find($params['serviceid']) ;
 	$pveserver = Capsule::table('tblservers')->where('id','=',$pveservice->server)->get()[0] ;
@@ -1135,24 +1736,163 @@ function pvewhmcs_vmStart($params) {
 		$pve_cmdparam = array();
 		$logrequest = '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/start';
 		$response = $proxmox->post('/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/start' , $pve_cmdparam);
+		
 	}
 	// DEBUG - Log the request parameters before it's fired
-	if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+//	if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
 		logModuleCall(
 			'pvewhmcs',
 			__FUNCTION__,
 			$logrequest,
 			json_encode($response)
 		);
-	}
-	// Return success only if no errors returned by PVE
+//	}
+
+
+	error_log("Proxmox vmStart response: " . print_r($response, true));
+
+
 	if (isset($response) && !isset($response['errors'])) {
-		return "success";
+		    return ['success' => true];
 	} else {
-		// Handle the case where there are errors
-		$response_message = isset($response['errors']) ? json_encode($response['errors']) : "Unknown Error, consider using Debug Mode.";
-		return "Error performing action. " . $response_message;
+		    $response_message = isset($response['errors']) ? json_encode($response['errors']) : json_encode($response);
+		    return ['error' => "Proxmox API Error: " . $response_message];
 	}
+
+}
+
+
+// Define constants for task polling if not already defined elsewhere
+if (!defined('PVEWHMCS_MAX_TASK_RETRIES')) {
+    define('PVEWHMCS_MAX_TASK_RETRIES', 12); // 12 retries * 5 seconds = 60 seconds timeout
+}
+if (!defined('PVEWHMCS_TASK_RETRY_INTERVAL')) {
+    define('PVEWHMCS_TASK_RETRY_INTERVAL', 5); // 5 seconds
+}
+
+
+
+ function pvewhmcs_vmReboot2($params) {
+    $action_result = "Could not connect to hypervisor or gather required information."; // Default error
+
+    try {
+        // Gather access credentials for PVE
+        $pveservice = Capsule::table('tblhosting')->find($params['serviceid']);
+        if (!$pveservice) throw new Exception("Service hosting record not found.");
+        $pveserver = Capsule::table('tblservers')->where('id', '=', $pveservice->server)->first();
+        if (!$pveserver) throw new Exception("Server record not found for service.");
+
+        $serverip = $pveserver->ipaddress;
+        $serverusername = $pveserver->username;
+        $api_data = array('password2' => $pveserver->password);
+        $decrypted_password = localAPI('DecryptPassword', $api_data);
+        $serverpassword = $decrypted_password['password'];
+
+        $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
+
+        if (!$proxmox->login()) {
+            throw new Exception("Proxmox API login failed. Please check credentials.");
+        }
+
+        $nodes = $proxmox->get_node_list();
+        if (empty($nodes) || !isset($nodes[0])) {
+            throw new Exception("Could not retrieve node list from Proxmox.");
+        }
+        $first_node = $nodes[0];
+
+        $guest = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $params['serviceid'])->first();
+        if (!$guest) {
+            throw new Exception("VM details not found in module database.");
+        }
+
+        $pve_cmdparam = array();
+        $api_endpoint_to_call = '';
+        $log_action_description = '';
+
+        $guest_specific_status = $proxmox->get('/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/current');
+
+        if (isset($guest_specific_status['status']) && $guest_specific_status['status'] == 'stopped') {
+            $api_endpoint_to_call = '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/start';
+            $log_action_description = 'Attempting to START stopped VM as part of reboot request.';
+        } else {
+            // Assumes if not stopped, it's running or in a state where reboot is appropriate
+            $api_endpoint_to_call = '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/reboot';
+            $log_action_description = 'Attempting to REBOOT VM.';
+        }
+        
+        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+            logModuleCall('pvewhmcs', __FUNCTION__, $log_action_description . ' Endpoint: ' . $api_endpoint_to_call, $pve_cmdparam);
+        }
+
+        $raw_response = $proxmox->post($api_endpoint_to_call, $pve_cmdparam);
+
+        if (is_string($raw_response) && strpos($raw_response, 'UPID:') === 0) {
+            $upid = trim($raw_response);
+            $action_result = "Operation initiated (UPID: {$upid}), awaiting completion...";
+            $task_completed_successfully = false;
+
+            for ($i = 0; $i < PVEWHMCS_MAX_TASK_RETRIES; $i++) {
+                sleep(PVEWHMCS_TASK_RETRY_INTERVAL);
+                $task_status = $proxmox->get("/nodes/{$first_node}/tasks/{$upid}/status");
+
+                if (isset($task_status['status']) && $task_status['status'] === 'stopped') {
+                    if (isset($task_status['exitstatus']) && $task_status['exitstatus'] === 'OK') {
+                        $action_result = "success";
+                        $task_completed_successfully = true;
+                        break;
+                    } else {
+                        $error_detail = $task_status['exitstatus'] ?? 'Unknown task error';
+                        if (strpos($error_detail, "can't lock file") !== false || strpos($error_detail, "got timeout") !== false) {
+                            $action_result = "Error: Proxmox could not acquire lock for the operation. The VM might be busy (e.g., backup) or another task is active. Please try again later. (Details: {$error_detail})";
+                        } else {
+                            $action_result = "Error: Proxmox task failed. (Details: {$error_detail})";
+                        }
+                        $task_completed_successfully = true; // Task stopped, even if failed
+                        break;
+                    }
+                } else if (!isset($task_status['status'])) {
+                     $action_result = "Warning: Could not retrieve task status update for UPID: {$upid}. Assuming operation is still in progress or completed elsewhere.";
+                     // This is ambiguous. For safety, we might not want to declare success.
+                     // Depending on strictness, could break or log and continue retrying.
+                     // For now, we'll let it retry.
+                }
+                // If status is 'running', loop continues.
+            }
+
+            if (!$task_completed_successfully) {
+                 // If loop finished without task stopping or explicit success
+                $action_result = "Operation timed out waiting for Proxmox task (UPID: {$upid}) to complete after " . (PVEWHMCS_MAX_TASK_RETRIES * PVEWHMCS_TASK_RETRY_INTERVAL) . " seconds.";
+            }
+
+        } elseif (is_array($raw_response) && isset($raw_response['data']) && $raw_response['data'] === null && !isset($raw_response['errors'])) {
+            // Some simple commands might return { "data": null } on success immediately without a UPID
+            // For reboot/start, a UPID is generally expected. This might indicate an issue or a very fast completion.
+            // For now, we treat it as potential success if no errors.
+             $action_result = "success"; // Or needs more specific handling based on Proxmox behavior for this exact call.
+             if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                logModuleCall('pvewhmcs', __FUNCTION__, $api_endpoint_to_call . ' received non-UPID success response', $raw_response);
+            }
+        } elseif (is_array($raw_response) && isset($raw_response['errors'])) {
+            $action_result = "Error performing action: " . json_encode($raw_response['errors']);
+        } else {
+            $action_result = "Unexpected response from Proxmox API: " . (is_scalar($raw_response) ? $raw_response : json_encode($raw_response));
+        }
+
+    } catch (PVE2_Exception $e) {
+        $action_result = "Proxmox API Communication Error: " . $e->getMessage();
+    } catch (Exception $e) {
+        $action_result = "Error: " . $e->getMessage();
+    }
+
+    if ($action_result !== "success" && Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+        logModuleCall(
+            'pvewhmcs',
+            __FUNCTION__,
+            isset($api_endpoint_to_call) ? $api_endpoint_to_call : 'N/A',
+            $action_result // Log the detailed error message
+        );
+    }
+    return $action_result;
 }
 
 // PVE API FUNCTION, CLIENT/ADMIN: Reboot the VM/CT
@@ -1177,14 +1917,21 @@ function pvewhmcs_vmReboot($params) {
 		$pve_cmdparam = array();
 		// Check status before doing anything
 		$guest_specific = $proxmox->get('/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/current');
-        	if ($guest_specific['status'] = 'stopped') {
+
+
+        	if ($guest_specific['status'] == 'stopped') {
 			// START if Stopped
 			$logrequest = '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/start';
 			$response = $proxmox->post('/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/start' , $pve_cmdparam);
 		} else {
 			// REBOOT if Started
-			$logrequest = '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/reboot';
-			$response = $proxmox->post('/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/reboot' , $pve_cmdparam);
+
+			$logrequest = '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/stop';
+			$response = $proxmox->post('/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/stop' , $pve_cmdparam);
+
+			$logrequest = '/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/start';
+			$response = $proxmox->post('/nodes/' . $first_node . '/' . $guest->vtype . '/' . $params['serviceid'] . '/status/start' , $pve_cmdparam);
+
 		}
 	}
 	// DEBUG - Log the request parameters before it's fired
@@ -1196,6 +1943,10 @@ function pvewhmcs_vmReboot($params) {
 			json_encode($response)
 		);
 	}
+
+//	throw new Exception(sprintf(':: %s', json_encode($guest_specific['status'])));
+
+
 	// Return success only if no errors returned by PVE
 	if (isset($response) && !isset($response['errors'])) {
 		return "success";

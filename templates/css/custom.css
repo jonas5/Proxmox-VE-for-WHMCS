@@ -1,0 +1,114 @@
+/* *****************************************************
+
+    ** Custom Stylesheet **
+
+    Any custom styling you want to apply should be
+    defined here.
+
+***************************************************** */
+/**
+
+* AALayer, © 2017
+* All Rights Reserved
+* www.aalayer.com
+  -
+* Template: lowendhost
+* For any issue or question contact our support.
+
+**/
+
+.kernel-config {
+  margin-top: 2rem;
+}
+
+.section-title {
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+
+.kernel-form .form-group {
+  margin-bottom: 1.5rem;
+}
+
+.kernel-form .form-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.form-help {
+  font-size: 0.95rem;
+  color: #555;
+  margin-bottom: 1.5rem;
+}
+
+.form-help p {
+  margin-bottom: 0.5rem;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.btn-secondary {
+  background-color: #f5f5f5;
+  border: 1px solid #ccc;
+  color: #333;
+}
+
+.small-text {
+  color: #555;
+  font-size: 0.775rem; /* or 14px */
+  line-height: 1.5;
+}
+
+.iso-management {
+  margin-top: 2rem;
+}
+
+.section-title {
+  margin-bottom: 1.5rem;
+  font-weight: 600;
+}
+
+.iso-panel {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.iso-panel .panel-heading {
+  background-color: #f7f7f7;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #ddd;
+}
+
+.iso-panel .panel-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.iso-panel .panel-body {
+  padding: 1rem;
+}
+
+.form-text.text-muted {
+  font-size: 0.875rem;
+  color: #666;
+}
+
+.form-actions {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-sm i,
+.btn-primary i {
+  margin-right: 0.3rem;
+}

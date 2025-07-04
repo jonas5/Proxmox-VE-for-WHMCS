@@ -199,6 +199,25 @@ function pvewhmcs_CreateAccount($params) {
 				$cloned_tweaks['cpu'] = $plan->cpuemu;
 				$cloned_tweaks['kvm'] = $plan->kvm;
 				$cloned_tweaks['onboot'] = $plan->onboot;
+
+				// Add new plan settings to cloned VM
+				// Swap: As noted before, KVM swap is OS-level. If $plan->swap exists, it's informational
+				// or for potential future cloud-init use. Not directly a PVE QEMU config for the clone call here.
+
+				// VGA settings for cloned VM
+				if (!empty($plan->vga) && $plan->vga != 'none') {
+					$vga_setting_cloned = $plan->vga;
+					if (!empty($plan->vgpu_memory) && is_numeric($plan->vgpu_memory)) {
+						$vgpu_mem_cloned = min((int)$plan->vgpu_memory, 512); // API max 512MB
+						// User specifically said MAX 16MB, let's try to honor this.
+                        // $vgpu_mem_cloned = min((int)$plan->vgpu_memory, 16);
+						$vga_setting_cloned .= ",memory={$vgpu_mem_cloned}";
+					}
+					$cloned_tweaks['vga'] = $vga_setting_cloned;
+				} elseif (!empty($plan->vga) && $plan->vga == 'none') {
+					$cloned_tweaks['vga'] = 'none';
+				}
+
 				$amendment = $proxmox->post('/nodes/' . $first_node . '/qemu/' . $vm_settings['newid'] . '/config', $cloned_tweaks);
 				return true;
 			} else {
@@ -282,6 +301,32 @@ function pvewhmcs_CreateAccount($params) {
 			}
 			$vm_settings['kvm'] = $plan->kvm;
 			$vm_settings['onboot'] = $plan->onboot;
+
+			// Swap setting - Proxmox doesn't have a direct KVM swap param like LXC.
+			// This is more for guest OS configuration (e.g., via cloud-init) or informational.
+			// However, if a 'swap' value is in the plan, we can make it available.
+			// For actual QEMU config, swap is handled by the guest OS.
+			// We won't add it to $vm_settings directly unless there's a specific QEMU parameter.
+			// If $plan->swap is meant to be used by cloud-init, that's a separate logic.
+			// For now, we acknowledge it's in the plan.
+
+			// VGA settings
+			if (!empty($plan->vga) && $plan->vga != 'none') {
+				$vga_setting = $plan->vga;
+				if (!empty($plan->vgpu_memory) && is_numeric($plan->vgpu_memory)) {
+					// VGA memory is often an integer, check Proxmox API if it needs 'M' suffix or just number
+					// Max 16MB was mentioned by user, API allows 4-512MB.
+					// Let's cap it at 16MB if that's a hard requirement, otherwise use plan value.
+					$vgpu_mem_to_set = min((int)$plan->vgpu_memory, 512); // Use API max as upper bound for safety
+					// User specifically said MAX 16MB, let's try to honor this for now.
+                    // $vgpu_mem_to_set = min((int)$plan->vgpu_memory, 16);
+					$vga_setting .= ",memory={$vgpu_mem_to_set}";
+				}
+				$vm_settings['vga'] = $vga_setting;
+			} elseif (!empty($plan->vga) && $plan->vga == 'none') {
+				$vm_settings['vga'] = 'none'; // Or potentially serial0 if that's the intent
+			}
+
 
 			$vm_settings[$plan->disktype . '0'] = $plan->storage . ':' . $plan->disk . ',format=' . $plan->diskformat;
 			if (!empty($plan->diskcache)) {

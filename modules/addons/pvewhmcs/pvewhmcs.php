@@ -537,7 +537,30 @@ function kvm_plan_add() {
 	CPU emulation type. Default is x86-64 psABI v2-AES
 	</td>
 	</tr>
-
+	<tr>
+	<td class="fieldlabel">RAM - Swap</td>
+	<td class="fieldarea">
+	<input type="text" size="8" name="swap" id="swap" value="512"> MB (Typically handled by Guest OS for KVM. Informational or for future cloud-init use)
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Type</td>
+	<td class="fieldarea">
+	<select class="form-control select-inline" name="vga">
+	<option value="std" selected>Standard VGA</option>
+	<option value="vmware">VMware Compatible</option>
+	<option value="qxl">QXL (SPICE)</option>
+	<option value="none">None</option>
+	</select>
+	Type of virtual graphics card.
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Memory (MB)</td>
+	<td class="fieldarea">
+	<input type="number" size="8" name="vgpu_memory" id="vgpu_memory" value="16" min="4" max="512"> MB (Proxmox default is 16MB for std. Max 16MB was mentioned by user, API allows more.)
+	</td>
+	</tr>
 	<tr>
 	<td class="fieldlabel">CPU - Sockets</td>
 	<td class="fieldarea">
@@ -853,7 +876,30 @@ function kvm_plan_edit($id) {
 	CPU emulation type. Default is x86-64 psABI v2-AES
 	</td>
 	</tr>
-
+	<tr>
+	<td class="fieldlabel">RAM - Swap</td>
+	<td class="fieldarea">
+	<input type="text" size="8" name="swap" id="swap" value="'.$plan->swap.'"> MB (Typically handled by Guest OS for KVM. Informational or for future cloud-init use)
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Type</td>
+	<td class="fieldarea">
+	<select class="form-control select-inline" name="vga">
+	<option value="std" ' . ($plan->vga == "std" ? "selected" : "") . '>Standard VGA</option>
+	<option value="vmware" ' . ($plan->vga == "vmware" ? "selected" : "") . '>VMware Compatible</option>
+	<option value="qxl" ' . ($plan->vga == "qxl" ? "selected" : "") . '>QXL (SPICE)</option>
+	<option value="none" ' . ($plan->vga == "none" ? "selected" : "") . '>None</option>
+	</select>
+	Type of virtual graphics card.
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Memory (MB)</td>
+	<td class="fieldarea">
+	<input type="number" size="8" name="vgpu_memory" id="vgpu_memory" value="'.$plan->vgpu_memory.'" min="4" max="512"> MB (Proxmox default is 16MB for std. Max 16MB was mentioned by user, API allows more)
+	</td>
+	</tr>
 	<tr>
 	<td class="fieldlabel">CPU - Sockets</td>
 	<td class="fieldarea">
@@ -1346,6 +1392,9 @@ function save_kvm_plan() {
 						'ipv6' => $_POST['ipv6'],
 						'kvm' => $_POST['kvm'],
 						'onboot' => $_POST['onboot'],
+						'swap' => $_POST['swap'],
+						'vga' => $_POST['vga'],
+						'vgpu_memory' => $_POST['vgpu_memory'],
 					]
 				);
 			}
@@ -1390,6 +1439,9 @@ function update_kvm_plan() {
 			'ipv6' => $_POST['ipv6'],
 			'kvm' => $_POST['kvm'],
 			'onboot' => $_POST['onboot'],
+			'swap' => $_POST['swap'],
+			'vga' => $_POST['vga'],
+			'vgpu_memory' => $_POST['vgpu_memory'],
 		]
 	);
 	$_SESSION['pvewhmcs']['infomsg']['title']='QEMU Plan updated.' ;

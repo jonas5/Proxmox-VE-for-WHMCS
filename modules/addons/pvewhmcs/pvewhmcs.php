@@ -103,6 +103,8 @@ function get_pvewhmcs_latest_version(){
 
 // ADMIN MODULE GUI: output (HTML etc)
 function pvewhmcs_output($vars) {
+
+
 	$modulelink = $vars['modulelink'];
 
 	// Check for update and report if available
@@ -133,6 +135,7 @@ function pvewhmcs_output($vars) {
 	<li class="'.($_GET['tab']=="actions" ? "active" : "").'"><a id="tabLink4" data-toggle="tab" role="tab" href="#actions">Actions / Logs</a></li>
 	<li class="'.($_GET['tab']=="health" ? "active" : "").'"><a id="tabLink5" data-toggle="tab" role="tab" href="#health">Support / Health</a></li>
 	<li class="'.($_GET['tab']=="config" ? "active" : "").'"><a id="tabLink6" data-toggle="tab" role="tab" href="#config">Module Config</a></li>
+        <li class="'.(isset($_GET['tab']) && $_GET['tab']=="vms" ? "active" : "").'"><a id="tabLink7" href="addonmodules.php?module=pvewhmcs&tab=vms">Virtual Machines</a></li>
 	</ul>
 	</div>
 	<div class="tab-content admin-tabs">
@@ -396,6 +399,50 @@ function pvewhmcs_output($vars) {
 	
 	echo '</div>';
 
+	// Virtual Machines Tab Content
+	echo '<div id="vms" class="tab-pane '.($_GET['tab']=="vms" ? "active" : "").'" >' ;
+	if ($_GET['tab'] == "vms") {
+	    // Display any action messages
+	    if (isset($_SESSION['pvewhmcs_admin_action_msg'])) {
+	        echo $_SESSION['pvewhmcs_admin_action_msg'];
+	        unset($_SESSION['pvewhmcs_admin_action_msg']);
+	    }
+
+	    $vm_action = isset($_GET['vm_action']) ? $_GET['vm_action'] : '';
+	    $vmid = isset($_GET['vmid']) ? $_GET['vmid'] : null;
+	    $node = isset($_GET['node']) ? $_GET['node'] : null; 
+	    $vtype = isset($_GET['vtype']) ? $_GET['vtype'] : null; 
+
+	    $action_params = ['vmid' => $vmid, 'node' => $node, 'vtype' => $vtype];
+
+	    switch ($vm_action) {
+	        case 'admin_vm_start':
+	            pvewhmcs_admin_vm_start($action_params);
+	            break;
+	        case 'admin_vm_stop':
+	            pvewhmcs_admin_vm_stop($action_params);
+	            break;
+	        case 'admin_vm_shutdown':
+	            pvewhmcs_admin_vm_shutdown($action_params);
+	            break;
+	        case 'admin_vm_reboot':
+	            pvewhmcs_admin_vm_reboot($action_params);
+	            break;
+	        case 'view_detail':
+	            if (!empty($vmid)) {
+	                pvewhmcs_view_vm_detail_admin($action_params); 
+	            } else {
+	                pvewhmcs_list_vms_admin(); 
+	            }
+	            break;
+	        default:
+	            pvewhmcs_list_vms_admin();
+	            break;
+	    }
+	}
+	echo '</div>';
+
+
 	echo '</div>'; // end of tab-content
 
 	if (isset($_POST['save_config'])) {
@@ -537,7 +584,30 @@ function kvm_plan_add() {
 	CPU emulation type. Default is x86-64 psABI v2-AES
 	</td>
 	</tr>
-
+	<tr>
+	<td class="fieldlabel">RAM - Swap</td>
+	<td class="fieldarea">
+	<input type="text" size="8" name="swap" id="swap" value="512"> MB (Typically handled by Guest OS for KVM. Informational or for future cloud-init use)
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Type</td>
+	<td class="fieldarea">
+	<select class="form-control select-inline" name="vga">
+	<option value="std" selected>Standard VGA</option>
+	<option value="vmware">VMware Compatible</option>
+	<option value="qxl">QXL (SPICE)</option>
+	<option value="none">None</option>
+	</select>
+	Type of virtual graphics card.
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Memory (MB)</td>
+	<td class="fieldarea">
+	<input type="number" size="8" name="vgpu_memory" id="vgpu_memory" value="16" min="4" max="512"> MB (Proxmox default is 16MB for std. Max 16MB was mentioned by user, API allows more.)
+	</td>
+	</tr>
 	<tr>
 	<td class="fieldlabel">CPU - Sockets</td>
 	<td class="fieldarea">
@@ -853,7 +923,30 @@ function kvm_plan_edit($id) {
 	CPU emulation type. Default is x86-64 psABI v2-AES
 	</td>
 	</tr>
-
+	<tr>
+	<td class="fieldlabel">RAM - Swap</td>
+	<td class="fieldarea">
+	<input type="text" size="8" name="swap" id="swap" value="'.$plan->swap.'"> MB (Typically handled by Guest OS for KVM. Informational or for future cloud-init use)
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Type</td>
+	<td class="fieldarea">
+	<select class="form-control select-inline" name="vga">
+	<option value="std" ' . ($plan->vga == "std" ? "selected" : "") . '>Standard VGA</option>
+	<option value="vmware" ' . ($plan->vga == "vmware" ? "selected" : "") . '>VMware Compatible</option>
+	<option value="qxl" ' . ($plan->vga == "qxl" ? "selected" : "") . '>QXL (SPICE)</option>
+	<option value="none" ' . ($plan->vga == "none" ? "selected" : "") . '>None</option>
+	</select>
+	Type of virtual graphics card.
+	</td>
+	</tr>
+	<tr>
+	<td class="fieldlabel">Display - VGA Memory (MB)</td>
+	<td class="fieldarea">
+	<input type="number" size="8" name="vgpu_memory" id="vgpu_memory" value="'.$plan->vgpu_memory.'" min="4" max="512"> MB (Proxmox default is 16MB for std. Max 16MB was mentioned by user, API allows more)
+	</td>
+	</tr>
 	<tr>
 	<td class="fieldlabel">CPU - Sockets</td>
 	<td class="fieldarea">
@@ -1346,6 +1439,9 @@ function save_kvm_plan() {
 						'ipv6' => $_POST['ipv6'],
 						'kvm' => $_POST['kvm'],
 						'onboot' => $_POST['onboot'],
+						'swap' => $_POST['swap'],
+						'vga' => $_POST['vga'],
+						'vgpu_memory' => $_POST['vgpu_memory'],
 					]
 				);
 			}
@@ -1390,6 +1486,9 @@ function update_kvm_plan() {
 			'ipv6' => $_POST['ipv6'],
 			'kvm' => $_POST['kvm'],
 			'onboot' => $_POST['onboot'],
+			'swap' => $_POST['swap'],
+			'vga' => $_POST['vga'],
+			'vgpu_memory' => $_POST['vgpu_memory'],
 		]
 	);
 	$_SESSION['pvewhmcs']['infomsg']['title']='QEMU Plan updated.' ;
@@ -1632,4 +1731,605 @@ function removeip($id,$pool_id) {
 	$_SESSION['pvewhmcs']['infomsg']['title']='IPv4 Address deleted.' ;
 	$_SESSION['pvewhmcs']['infomsg']['message']='Deleted selected item successfully.' ;
 }
+
+function isHostUp($host, $port = 8006, $timeout = 5) {
+    $connection = @fsockopen($host, $port, $errno, $errstr, $timeout);
+    if ($connection) {
+        fclose($connection);
+        return true;
+    }
+    return false;
+}
+
+
+// ADMIN ADDON: List Virtual Machines
+function pvewhmcs_list_vms_admin() {
+	echo '<h3>Managed Virtual Machines</h3>';
+
+	$vms_data = [];
+	try {
+		$managed_vms = Capsule::table('mod_pvewhmcs_vms as mvm')
+			->join('tblhosting as h', 'mvm.id', '=', 'h.id') // Assuming mvm.id is the serviceid
+			->join('tblproducts as p', 'h.packageid', '=', 'p.id')
+			->join('tblclients as c', 'h.userid', '=', 'c.id')
+			->join('tblservers as s', 'h.server', '=', 's.id')
+			->where('s.type', '=', 'pvewhmcs') // Ensure we are only getting VMs from Proxmox servers
+			->select(
+				'mvm.id as vmid', // serviceid is the vmid in this context
+				'mvm.vtype',
+				'mvm.ipaddress as vm_main_ip',
+				'h.domainstatus as whmcs_service_status',
+				'h.server as server_id',
+				'p.name as product_name',
+				'c.firstname',
+				'c.lastname',
+				'c.companyname',
+				's.ipaddress as server_ip',
+				's.username as server_username',
+				's.password as server_password_encrypted'
+			)
+			->get();
+
+		if (count($managed_vms) == 0) {
+			echo '<p>No Proxmox virtual machines found managed by this module.</p>';
+			return;
+		}
+
+		echo '<table class="datatable" width="100%">
+				<thead>
+					<tr>
+						<th>VMID</th>
+						<th>Product Name</th>
+						<th>Client</th>
+						<th>PVE Status</th>
+						<th>WHMCS Status</th>
+						<th>IP Address</th>
+						<th>Guest Agent</th>
+						<th>Node</th>
+						<th>Actions</th>
+					</tr>
+				</thead>
+				<tbody>';
+
+
+		$port = 8006; // Proxmox default API port
+
+
+		foreach ($managed_vms as $vm) {
+
+			if (!isHostUp($vm->server_ip, $port)) {
+			    // Host is down, handle accordingly
+			    error_log(sprintf("Proxmox host %s is unreachable on port %s.", $vm->server_ip, $port));
+			    return;
+			    // Optionally return an error or skip the operation
+			}
+
+
+			// Decrypt server password
+			$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $vm->server_password_encrypted]);
+			$serverpassword = $serverpassword_decrypted['password'];
+
+			$pve_status = 'N/A';
+			$guest_agent_status = 'N/A';
+			$pve_node = 'N/A';
+
+			try {
+
+				$proxmox = new PVE2_API($vm->server_ip, $vm->server_username, "pam", $serverpassword);
+
+				if ($proxmox->login()) {
+
+					$nodes = $proxmox->get_node_list();
+
+
+					// Attempt to find the VM across nodes if not stored, or use a stored node if available
+					// For now, we might need to iterate or have the node stored in mod_pvewhmcs_vms
+					// Let's assume for now it's on the first node or we need to enhance mod_pvewhmcs_vms to store node
+					
+					// Simplified: try first node. A more robust solution would check all nodes or store the node.
+					// $pve_node = !empty($nodes[0]) ? $nodes[0] : 'Unknown'; 
+					// Search for the node where the VM is located
+					$vm_resource_info = null;
+					$cluster_resources = $proxmox->get("/cluster/resources?type=vm");
+					foreach ($cluster_resources as $resource) {
+						if ($resource['vmid'] == $vm->vmid && $resource['type'] == $vm->vtype) {
+							$vm_resource_info = $resource;
+							$pve_node = $resource['node'];
+							break;
+						}
+					}
+
+					if ($pve_node !== 'N/A' && $vm_resource_info) {
+						$pve_status = ucfirst($vm_resource_info['status'] ?? 'unknown');
+						if ($vm->vtype == 'qemu') {
+							$vm_config = $proxmox->get("/nodes/{$pve_node}/qemu/{$vm->vmid}/config");
+							if (isset($vm_config['agent']) && preg_match('/1/', $vm_config['agent'])) {
+								// Agent is configured in Proxmox. Check if running.
+								// This is a basic check. get-networks is more reliable if agent is responsive.
+
+								$agent_info = $proxmox->get("/nodes/{$pve_node}/qemu/{$vm->vmid}/agent/ping");
+								error_log(sprintf('--> %s', json_encode($agent_info)));
+
+								if (isset($agent_info) && is_array($agent_info) && empty($agent_info['errors']) && $agent_info !== null) {
+				                                        // PVE API returns empty array on successful ping
+									$guest_agent_status = '<span style="color:green;">Running</span>';
+								} else {
+									$guest_agent_status = '<span style="color:orange;">Enabled, Not Responding</span>';
+								}
+							} else {
+								$guest_agent_status = '<span style="color:red;">Disabled</span>';
+								error_log(sprintf('%s', json_encode($vm_config)));
+
+							}
+						} else { // LXC
+							$guest_agent_status = 'N/A (LXC)';
+						}
+					} else {
+						$pve_status = '<span style="color:red;">Not Found on PVE</span>';
+						$pve_node = 'Unknown';
+					}
+				} else {
+					$pve_status = '<span style="color:red;">Login Failed</span>';
+				}
+			} catch (Exception $e) {
+				$pve_status = '<span style="color:red;">API Error</span>';
+				if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+					logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid}", $e->getMessage(), $e->getTraceAsString());
+				}
+			}
+
+			$client_name = trim($vm->firstname . ' ' . $vm->lastname);
+			if (!empty($vm->companyname)) {
+				$client_name .= ' (' . $vm->companyname . ')';
+			}
+			
+			// Action buttons - URLs will be placeholders for now
+			$actions = '';
+			if ($pve_status !== 'N/A' && strpos($pve_status, 'Error') === false && strpos($pve_status, 'Failed') === false && strpos($pve_status, 'Not Found') === false) {
+				$base_action_url = pvewhmcs_BASEURL . "&tab=vms&vmid={$vm->vmid}&node={$pve_node}&vtype={$vm->vtype}";
+				if ($pve_status == 'Stopped') {
+					$actions .= "<a href='{$base_action_url}&vm_action=admin_vm_start' class='btn btn-xs btn-success'>Start</a> ";
+				} else if ($pve_status == 'Running') {
+					$actions .= "<a href='{$base_action_url}&vm_action=admin_vm_stop' class='btn btn-xs btn-warning'>Stop</a> ";
+					$actions .= "<a href='{$base_action_url}&vm_action=admin_vm_shutdown' class='btn btn-xs btn-info'>Shutdown</a> ";
+					$actions .= "<a href='{$base_action_url}&vm_action=admin_vm_reboot' class='btn btn-xs btn-primary'>Reboot</a> ";
+				}
+			}
+			$actions .= "<a href='".pvewhmcs_BASEURL."&tab=vms&vm_action=view_detail&vmid={$vm->vmid}&node={$pve_node}&vtype={$vm->vtype}' class='btn btn-xs btn-default'>Details</a>";
+
+
+			echo "<tr>
+					<td>{$vm->vmid}</td>
+					<td>{$vm->product_name}</td>
+					<td><a href='clientssummary.php?userid={$h->userid}'>{$client_name}</a></td>
+					<td>{$pve_status}</td>
+					<td>{$vm->whmcs_service_status}</td>
+					<td>{$vm->vm_main_ip}</td>
+					<td>{$guest_agent_status}</td>
+					<td>{$pve_node}</td>
+					<td>{$actions}</td>
+				  </tr>";
+		}
+		echo '</tbody></table>';
+
+	} catch (Exception $e) {
+		echo "<div class='alert alert-danger'>An error occurred while fetching VM list: " . $e->getMessage() . "</div>";
+		if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			logModuleCall('pvewhmcs_admin_list_vms', "General Error", $e->getMessage(), $e->getTraceAsString());
+		}
+	}
+}
+
+// ADMIN ADDON: VM Action - Start
+function pvewhmcs_admin_vm_start($params) {
+	$vmid = $params['vmid'];
+	$node = $params['node'];
+	$vtype = $params['vtype'];
+	$serviceid = $vmid; // In this context, vmid from the list is the serviceid
+
+	if (empty($vmid) || empty($node) || empty($vtype)) {
+		return "<div class='alert alert-danger'>Error: Missing VMID, Node, or Type for Start action.</div>";
+	}
+
+	try {
+		$hosting = Capsule::table('tblhosting')->where('id', $serviceid)->first();
+		if (!$hosting) {
+			return "<div class='alert alert-danger'>Error: Service ID {$serviceid} not found.</div>";
+		}
+		$server = Capsule::table('tblservers')->where('id', $hosting->server)->first();
+		if (!$server) {
+			return "<div class='alert alert-danger'>Error: Server for Service ID {$serviceid} not found.</div>";
+		}
+
+		$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $server->password]);
+		$serverpassword = $serverpassword_decrypted['password'];
+
+		$proxmox = new PVE2_API($server->ipaddress, $server->username, "pam", $serverpassword);
+
+		if ($proxmox->login()) {
+			$api_response = $proxmox->post("/nodes/{$node}/{$vtype}/{$vmid}/status/start", []);
+			if (isset($api_response['data']) || (is_string($api_response) && strpos($api_response, 'UPID:') === 0) ) {
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-success'>VM Start command issued for VMID {$vmid}. UPID: {$api_response['data']}</div>";
+			} else {
+				$error_detail = is_array($api_response) ? json_encode($api_response) : $api_response;
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error starting VM {$vmid}: {$error_detail}</div>";
+			}
+		} else {
+			$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error: Could not log in to Proxmox server {$server->ipaddress}.</div>";
+		}
+	} catch (Exception $e) {
+		$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Exception during VM Start for VMID {$vmid}: " . $e->getMessage() . "</div>";
+		if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			logModuleCall('pvewhmcs_admin_vm_start', "Exception for VMID {$vmid}", $e->getMessage(), $e->getTraceAsString());
+		}
+	}
+	// Redirect back to the VM list
+	header("Location: " . pvewhmcs_BASEURL . "&tab=vms");
+	exit;
+}
+
+// ADMIN ADDON: VM Action - Stop
+function pvewhmcs_admin_vm_stop($params) {
+	$vmid = $params['vmid'];
+	$node = $params['node'];
+	$vtype = $params['vtype'];
+	$serviceid = $vmid;
+
+	if (empty($vmid) || empty($node) || empty($vtype)) {
+		return "<div class='alert alert-danger'>Error: Missing VMID, Node, or Type for Stop action.</div>";
+	}
+
+	try {
+		$hosting = Capsule::table('tblhosting')->where('id', $serviceid)->first();
+		$server = Capsule::table('tblservers')->where('id', $hosting->server)->first();
+		$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $server->password]);
+		$serverpassword = $serverpassword_decrypted['password'];
+		$proxmox = new PVE2_API($server->ipaddress, $server->username, "pam", $serverpassword);
+
+		if ($proxmox->login()) {
+			$api_response = $proxmox->post("/nodes/{$node}/{$vtype}/{$vmid}/status/stop", []);
+			if (isset($api_response['data']) || (is_string($api_response) && strpos($api_response, 'UPID:') === 0)) {
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-success'>VM Stop command issued for VMID {$vmid}. UPID: {$api_response['data']}</div>";
+			} else {
+				$error_detail = is_array($api_response) ? json_encode($api_response) : $api_response;
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error stopping VM {$vmid}: {$error_detail}</div>";
+			}
+		} else {
+			$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error: Could not log in to Proxmox server {$server->ipaddress}.</div>";
+		}
+	} catch (Exception $e) {
+		$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Exception during VM Stop for VMID {$vmid}: " . $e->getMessage() . "</div>";
+	}
+	header("Location: " . pvewhmcs_BASEURL . "&tab=vms");
+	exit;
+}
+
+// ADMIN ADDON: VM Action - Shutdown
+function pvewhmcs_admin_vm_shutdown($params) {
+	$vmid = $params['vmid'];
+	$node = $params['node'];
+	$vtype = $params['vtype'];
+	$serviceid = $vmid;
+
+	if (empty($vmid) || empty($node) || empty($vtype)) {
+		return "<div class='alert alert-danger'>Error: Missing VMID, Node, or Type for Shutdown action.</div>";
+	}
+	
+	try {
+		$hosting = Capsule::table('tblhosting')->where('id', $serviceid)->first();
+		$server = Capsule::table('tblservers')->where('id', $hosting->server)->first();
+		$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $server->password]);
+		$serverpassword = $serverpassword_decrypted['password'];
+		$proxmox = new PVE2_API($server->ipaddress, $server->username, "pam", $serverpassword);
+
+		if ($proxmox->login()) {
+			$api_response = $proxmox->post("/nodes/{$node}/{$vtype}/{$vmid}/status/shutdown", []);
+			if (isset($api_response['data']) || (is_string($api_response) && strpos($api_response, 'UPID:') === 0)) {
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-success'>VM Shutdown command issued for VMID {$vmid}. UPID: {$api_response['data']}</div>";
+			} else {
+				$error_detail = is_array($api_response) ? json_encode($api_response) : $api_response;
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error shutting down VM {$vmid}: {$error_detail}</div>";
+			}
+		} else {
+			$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error: Could not log in to Proxmox server {$server->ipaddress}.</div>";
+		}
+	} catch (Exception $e) {
+		$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Exception during VM Shutdown for VMID {$vmid}: " . $e->getMessage() . "</div>";
+	}
+	header("Location: " . pvewhmcs_BASEURL . "&tab=vms");
+	exit;
+}
+
+// ADMIN ADDON: VM Action - Reboot
+function pvewhmcs_admin_vm_reboot($params) {
+	$vmid = $params['vmid'];
+	$node = $params['node'];
+	$vtype = $params['vtype'];
+	$serviceid = $vmid;
+
+	if (empty($vmid) || empty($node) || empty($vtype)) {
+		return "<div class='alert alert-danger'>Error: Missing VMID, Node, or Type for Reboot action.</div>";
+	}
+
+	try {
+		$hosting = Capsule::table('tblhosting')->where('id', $serviceid)->first();
+		$server = Capsule::table('tblservers')->where('id', $hosting->server)->first();
+		$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $server->password]);
+		$serverpassword = $serverpassword_decrypted['password'];
+		$proxmox = new PVE2_API($server->ipaddress, $server->username, "pam", $serverpassword);
+
+		if ($proxmox->login()) {
+			// Proxmox API for reboot might require the VM to be running.
+			// A simple approach is to just send reboot. A more robust one would check status first.
+			$api_response = $proxmox->post("/nodes/{$node}/{$vtype}/{$vmid}/status/reboot", []);
+			if (isset($api_response['data']) || (is_string($api_response) && strpos($api_response, 'UPID:') === 0)) {
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-success'>VM Reboot command issued for VMID {$vmid}. UPID: {$api_response['data']}</div>";
+			} else {
+				$error_detail = is_array($api_response) ? json_encode($api_response) : $api_response;
+				$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error rebooting VM {$vmid}: {$error_detail}</div>";
+			}
+		} else {
+			$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Error: Could not log in to Proxmox server {$server->ipaddress}.</div>";
+		}
+	} catch (Exception $e) {
+		$_SESSION['pvewhmcs_admin_action_msg'] = "<div class='alert alert-danger'>Exception during VM Reboot for VMID {$vmid}: " . $e->getMessage() . "</div>";
+	}
+	header("Location: " . pvewhmcs_BASEURL . "&tab=vms");
+	exit;
+}
+
+// Utility function (copied from servers/pvewhmcs/pvewhmcs.php for admin UI use)
+// Ensure this function is defined only once in this file. 
+// If it's already present elsewhere in this specific file, this would be a re-declaration.
+if (!function_exists('time2format')) {
+    function time2format($s) {
+        $d = intval( $s / 86400 );
+        $str = ''; 
+        if ($d > 0) { // Only show days if there are any
+            $str = $d . ' day' . ($d > 1 ? 's' : '') . ' ';
+        }
+    
+        $s -= $d * 86400;
+        $h = intval( $s / 3600 );
+        $s -= $h * 3600;
+        $m = intval( $s / 60 );
+        $s -= $m * 60;
+    
+        // Always show H:M:S format, even if days are present or some parts are zero
+        $str .= sprintf('%02d:%02d:%02d', $h, $m, $s);
+        
+        if (trim($str) == '00:00:00' && $d == 0) return '0s'; // Special case for exactly 0 uptime
+        return trim($str);
+    }
+}
+
+
+// ADMIN ADDON: View VM Details
+function pvewhmcs_view_vm_detail_admin($params) {
+	$vmid = $params['vmid'];
+	$node = $params['node']; // The node where the VM is believed to be
+	$vtype = $params['vtype'];
+	$serviceid = $vmid;
+
+	if (empty($vmid) || empty($node) || empty($vtype)) {
+		echo "<div class='alert alert-danger'>Error: Missing VMID, Node, or Type for Detail View.</div>";
+		return;
+	}
+
+	echo "<h3>Virtual Machine Details: VMID {$vmid}</h3>";
+
+	try {
+		$hosting_info = Capsule::table('tblhosting as h')
+			->join('tblproducts as p', 'h.packageid', '=', 'p.id')
+			->join('tblclients as c', 'h.userid', '=', 'c.id')
+			->join('tblservers as s', 'h.server', '=', 's.id')
+			->where('h.id', $serviceid)
+			->where('s.type', '=', 'pvewhmcs')
+			->select(
+				'h.domainstatus as whmcs_service_status',
+				'h.regdate as registration_date',
+				'p.name as product_name',
+				'c.firstname', 'c.lastname', 'c.companyname', 'c.email', 'h.userid',
+				's.ipaddress as server_ip',
+				's.username as server_username',
+				's.password as server_password_encrypted',
+				's.name as server_name'
+			)
+			->first();
+
+		if (!$hosting_info) {
+			echo "<div class='alert alert-danger'>Error: Could not retrieve hosting or server information for Service ID {$serviceid}.</div>";
+			return;
+		}
+		
+		$vm_db_info = Capsule::table('mod_pvewhmcs_vms')->where('id', $serviceid)->first();
+        if (!$vm_db_info) {
+            echo "<div class='alert alert-danger'>Error: VM details not found in module database for Service ID {$serviceid}.</div>";
+            return;
+        }
+
+
+		$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $hosting_info->server_password_encrypted]);
+		$serverpassword = $serverpassword_decrypted['password'];
+
+		$proxmox = new PVE2_API($hosting_info->server_ip, $hosting_info->server_username, "pam", $serverpassword);
+
+		$vm_config = null;
+		$vm_status_pve = null;
+		$vm_rrd_stats = [];
+		$pve_login_error = false;
+
+		if ($proxmox->login()) {
+			// Confirm VM exists on this node, or try to find it if node parameter was tentative
+			$current_vm_info_from_cluster = null;
+            $actual_node = $node; // Assume provided node is correct initially
+
+            $cluster_resources = $proxmox->get("/cluster/resources?type=vm");
+            foreach ($cluster_resources as $resource) {
+                if ($resource['vmid'] == $vmid && $resource['type'] == $vtype) {
+                    $current_vm_info_from_cluster = $resource;
+                    $actual_node = $resource['node']; // Update to actual node
+                    break;
+                }
+            }
+
+            if (!$current_vm_info_from_cluster) {
+                echo "<div class='alert alert-warning'>VMID {$vmid} not found in Proxmox cluster resources. It might have been removed or is on a different node not accessible with current server config.</div>";
+            } else {
+                 $node = $actual_node; // Use the confirmed node from here
+            }
+
+			if($current_vm_info_from_cluster){
+				$vm_config = $proxmox->get("/nodes/{$node}/{$vtype}/{$vmid}/config");
+				$status_current = $proxmox->get("/nodes/{$node}/{$vtype}/{$vmid}/status/current");
+				
+				$vm_status_pve = $current_vm_info_from_cluster; // Use already fetched data
+                $vm_status_pve['uptime_formatted'] = isset($status_current['uptime']) ? time2format($status_current['uptime']) : 'N/A';
+                $vm_status_pve['cpu_percent'] = isset($status_current['cpu']) ? round($status_current['cpu'] * 100, 2) : 0;
+                $vm_status_pve['mem_percent'] = ($status_current['maxmem'] > 0) ? intval($status_current['mem'] * 100 / $status_current['maxmem']) : 0;
+                $vm_status_pve['disk_percent'] = ($status_current['maxdisk'] > 0) ? intval($status_current['disk'] * 100 / $status_current['maxdisk']) : 0;
+				
+				if ($vtype == 'lxc') {
+                    $vm_status_pve['swap_percent'] = ($status_current['maxswap'] > 0) ? intval($status_current['swap'] * 100 / $status_current['maxswap']) : 0;
+                } else {
+                    $vm_status_pve['swap_percent'] = 0; // KVM swap is OS internal
+                }
+
+
+				// Fetch RRD data (simplified, adapt from pvewhmcs_ClientArea)
+				$timeframes = ['day', 'week', 'month', 'year'];
+				$metrics = [
+					'cpu' => 'cpu&cf=AVERAGE',
+					'mem' => 'maxmem&cf=AVERAGE', // PVE uses maxmem for memory graphs
+					'net' => 'netin,netout&cf=AVERAGE',
+					'diskio' => 'diskread,diskwrite&cf=AVERAGE'
+				];
+
+				foreach ($metrics as $metric_key => $metric_params) {
+					foreach ($timeframes as $tf) {
+						try {
+							$rrd_data = $proxmox->get("/nodes/{$node}/{$vtype}/{$vmid}/rrd?timeframe={$tf}&ds={$metric_params}");
+							$vm_rrd_stats[$metric_key][$tf] = isset($rrd_data['image']) ? base64_encode(utf8_decode($rrd_data['image'])) : '';
+						} catch (Exception $e_rrd) {
+							$vm_rrd_stats[$metric_key][$tf] = ''; // Set to empty if RRD fetch fails
+							if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+								logModuleCall('pvewhmcs_admin_vm_detail', "RRD Error for VMID {$vmid} Metric {$metric_key} TF {$tf}", $e_rrd->getMessage(), '');
+							}
+						}
+					}
+				}
+			}
+
+		} else {
+			$pve_login_error = true;
+			echo "<div class='alert alert-danger'>Error: Could not log in to Proxmox server {$hosting_info->server_ip} to fetch details.</div>";
+		}
+
+		// Prepare variables for a template (or direct output)
+		// This part would ideally use a Smarty template like clientarea.tpl
+		// For now, let's output some basic info and structure for the template later
+
+		$client_display_name = trim($hosting_info->firstname . ' ' . $hosting_info->lastname);
+		if (!empty($hosting_info->companyname)) $client_display_name .= " ({$hosting_info->companyname})";
+
+		// Basic Info Table
+		echo "<h4>Service & Client Information</h4>";
+		echo "<table class='table table-bordered' width='50%'>";
+		echo "<tr><td width='30%'>WHMCS Service ID:</td><td>{$serviceid}</td></tr>";
+		echo "<tr><td>Product Name:</td><td>{$hosting_info->product_name}</td></tr>";
+		echo "<tr><td>Client:</td><td><a href='clientssummary.php?userid={$hosting_info->userid}'>{$client_display_name}</a> ({$hosting_info->email})</td></tr>";
+		echo "<tr><td>Registration Date:</td><td>{$hosting_info->registration_date}</td></tr>";
+		echo "<tr><td>WHMCS Status:</td><td>{$hosting_info->whmcs_service_status}</td></tr>";
+		echo "<tr><td>Proxmox Server:</td><td>{$hosting_info->server_name} ({$hosting_info->server_ip})</td></tr>";
+		echo "<tr><td>Assigned IPv4:</td><td>{$vm_db_info->ipaddress}</td></tr>";
+		echo "</table>";
+		
+		if ($pve_login_error) return;
+		if (!$current_vm_info_from_cluster) return; // Stop if VM not found on PVE
+
+		// PVE Status & Config (mimicking clientarea.tpl structure)
+		echo "<h4>Proxmox VE Status & Configuration</h4>";
+		
+		// Status dials (simplified representation here)
+		echo '<div class="row" style="margin-bottom: 20px;">';
+		if ($vm_status_pve) {
+			echo '<div class="col-md-3"><strong>Status:</strong> ' . ucfirst($vm_status_pve['status']) . '<br><strong>Uptime:</strong> ' . $vm_status_pve['uptime_formatted'] . '</div>';
+			echo '<div class="col-md-2"><strong>CPU:</strong> ' . $vm_status_pve['cpu_percent'] . '%</div>';
+			echo '<div class="col-md-2"><strong>Memory:</strong> ' . $vm_status_pve['mem_percent'] . '%</div>';
+			echo '<div class="col-md-2"><strong>Disk:</strong> ' . $vm_status_pve['disk_percent'] . '%</div>';
+			if ($vtype == 'lxc') {
+				echo '<div class="col-md-2"><strong>Swap:</strong> ' . $vm_status_pve['swap_percent'] . '%</div>';
+			}
+		} else {
+			echo '<div class="col-md-12"><span style="color:red;">Could not fetch current PVE status.</span></div>';
+		}
+		echo '</div>';
+
+		// Config Table
+		if ($vm_config) {
+			echo '<table class="table table-bordered table-striped">';
+			echo "<tr><td><strong>VM Type:</strong></td><td>" . strtoupper($vtype) . "</td></tr>";
+			echo "<tr><td><strong>OS Type (from PVE):</strong></td><td>{$vm_config['ostype']}</td></tr>";
+			echo "<tr><td><strong>Name (from PVE):</strong></td><td>{$vm_config['name']}</td></tr>";
+			echo "<tr><td><strong>CPUs:</strong></td><td>Sockets: {$vm_config['sockets']}, Cores: {$vm_config['cores']} ({$vm_config['cpu']})</td></tr>";
+			echo "<tr><td><strong>Memory:</strong></td><td>{$vm_config['memory']} MB</td></tr>";
+			if (isset($vm_config['swap']) && $vtype == 'lxc') echo "<tr><td><strong>Swap (LXC):</strong></td><td>{$vm_config['swap']} MB</td></tr>";
+			
+			// Network interfaces
+			for ($i=0; $i<5; $i++) { // Check up to net4
+				if (isset($vm_config["net{$i}"])) {
+					echo "<tr><td><strong>NIC (net{$i}):</strong></td><td>" . str_replace(',', '<br/>', $vm_config["net{$i}"]) . "</td></tr>";
+				}
+			}
+			// Disk interfaces
+			$disk_keys = preg_grep('/^(ide|sata|scsi|virtio)\d+$/', array_keys($vm_config));
+			foreach($disk_keys as $disk_key){
+				if(strpos($vm_config[$disk_key], 'media=cdrom') === false){ // Don't show CDROMs as main disks
+					 echo "<tr><td><strong>Disk ({$disk_key}):</strong></td><td>" . str_replace(',', '<br/>', $vm_config[$disk_key]) . "</td></tr>";
+				}
+			}
+			if (isset($vm_config['rootfs']) && $vtype == 'lxc')  echo "<tr><td><strong>Root FS (LXC):</strong></td><td>" . str_replace(',', '<br/>', $vm_config['rootfs']) . "</td></tr>";
+
+			echo "<tr><td><strong>Boot Order (PVE):</strong></td><td>{$vm_config['boot']}</td></tr>";
+			echo "</table>";
+		} else {
+			echo "<p>Could not load VM configuration from Proxmox.</p>";
+		}
+
+		// Statistics Graphs (mimicking clientarea.tpl)
+		echo "<h4>VM Statistics Graphs</h4>";
+		if (!empty($vm_rrd_stats)) {
+			echo '<ul class="nav nav-tabs client-tabs" role="tablist">
+					<li class="active"><a data-toggle="tab" role="tab" href="#adminVmDailyStat">Daily</a></li>
+					<li><a data-toggle="tab" role="tab" href="#adminVmWeeklyStat">Weekly</a></li>
+					<li><a data-toggle="tab" role="tab" href="#adminVmMonthlyStat">Monthly</a></li>
+					<li><a data-toggle="tab" role="tab" href="#adminVmYearlyStat">Yearly</a></li>
+				  </ul>';
+			echo '<div class="tab-content admin-tabs">';
+			foreach ($timeframes as $index => $tf_name) {
+				$active_class = ($index == 0) ? "active" : "";
+				echo "<div id='adminVm".ucfirst($tf_name)."Stat' class='tab-pane {$active_class}'>";
+				if (!empty($vm_rrd_stats['cpu'][$tf_name])) echo "<img src='data:image/png;base64,{$vm_rrd_stats['cpu'][$tf_name]}'/> ";
+				if (!empty($vm_rrd_stats['mem'][$tf_name])) echo "<img src='data:image/png;base64,{$vm_rrd_stats['mem'][$tf_name]}'/> ";
+				if (!empty($vm_rrd_stats['net'][$tf_name])) echo "<img src='data:image/png;base64,{$vm_rrd_stats['net'][$tf_name]}'/> ";
+				if (!empty($vm_rrd_stats['diskio'][$tf_name])) echo "<img src='data:image/png;base64,{$vm_rrd_stats['diskio'][$tf_name]}'/>";
+				if (empty($vm_rrd_stats['cpu'][$tf_name]) && empty($vm_rrd_stats['mem'][$tf_name])) echo "<p>No graph data available for this period.</p>";
+				echo "</div>";
+			}
+			echo '</div>'; // tab-content
+		} else {
+			echo "<p>No statistics graph data available or Proxmox login failed.</p>";
+		}
+
+
+	} catch (Exception $e) {
+		echo "<div class='alert alert-danger'>An error occurred while fetching VM details: " . $e->getMessage() . "</div>";
+		if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			logModuleCall('pvewhmcs_admin_vm_detail', "General Error for VMID {$vmid}", $e->getMessage(), $e->getTraceAsString());
+		}
+	}
+	echo "<p><a href='".pvewhmcs_BASEURL."&tab=vms' class='btn btn-default'>&laquo; Back to VM List</a></p>";
+}
+
+
 ?>

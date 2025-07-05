@@ -199,25 +199,8 @@ function pvewhmcs_CreateAccount($params) {
 				$cloned_tweaks['cpu'] = $plan->cpuemu;
 				$cloned_tweaks['kvm'] = $plan->kvm;
 				$cloned_tweaks['onboot'] = $plan->onboot;
-                // Apply custom args if provided via custom field during KVM clone
-                if (!empty($params['customfields']['CustomProxmoxArgs'])) {
-                    $cloned_tweaks['args'] = $params['customfields']['CustomProxmoxArgs'];
-                }
 				$amendment = $proxmox->post('/nodes/' . $first_node . '/qemu/' . $vm_settings['newid'] . '/config', $cloned_tweaks);
-				
-                // Update local DB with custom_args if set from custom field
-                $update_local_db_params = [];
-                if (!empty($params['customfields']['CustomProxmoxArgs'])) {
-                    $update_local_db_params['custom_args'] = $params['customfields']['CustomProxmoxArgs'];
-                }
-                // Also ensure ostype from plan is saved for KVM template clones
-                if (!empty($plan->ostype)) {
-                    $update_local_db_params['ostype'] = $plan->ostype;
-                }
-                if (!empty($update_local_db_params)) {
-                    Capsule::table('mod_pvewhmcs_vms')->where('id', $params['serviceid'])->update($update_local_db_params);
-                }
-                return true;
+				return true;
 			} else {
 				throw new Exception("Proxmox Error: Failed to initiate clone. Response: " . json_encode($response));
 			}
@@ -345,11 +328,6 @@ function pvewhmcs_CreateAccount($params) {
 		$vm_settings['cpulimit'] = $plan->cpulimit;
 		$vm_settings['memory'] = $plan->memory;
 
-        // Add custom arguments if provided via custom field for non-template QEMU/LXC
-        if (!empty($params['customfields']['CustomProxmoxArgs']) && $plan->vmtype == 'qemu') { // LXC does not use 'args' in the same way QEMU does.
-            $vm_settings['args'] = $params['customfields']['CustomProxmoxArgs'];
-        }
-
 		////////////////////////////////////////////////////
 		// CREATION: Attempt to Create Guest via PVE2 API //
 		////////////////////////////////////////////////////
@@ -428,8 +406,6 @@ function pvewhmcs_CreateAccount($params) {
 							'gateway' => $ip->gateway,
 							'created' => date("Y-m-d H:i:s"),
 							'v6prefix' => $plan->ipv6,
-                            'custom_args' => (!empty($params['customfields']['CustomProxmoxArgs']) && $v == 'qemu') ? $params['customfields']['CustomProxmoxArgs'] : null,
-                            'ostype' => ($v == 'qemu') ? $plan->ostype : null, // Save ostype for QEMU, null for LXC from plan
 						]
 					);
 					return true;
@@ -821,14 +797,13 @@ function pvewhmcs_ClientAreaCustomButtonArray() {
 		"<i class='fa fa-2x fa-compact-disc'></i> &nbsp; Load Iso" => "loadIsoPage",
 	        "<i class='fa fa-2x fa-cogs'></i> Kernel Configuration" => "redirectToKernelConfigView",
 		"<i class='fa fa-2x fa-sort-amount-up'></i> &nbsp; Boot Order" => "loadBootOrderPage",
-		"<i class='fa fa-2x fa-terminal'></i> &nbsp; Adv. Boot Options" => "loadCustomArgsPage",
 		"<i class='fa fa-2x fa-chart-bar'></i> &nbsp; Statistics" => "vmStat",
 	);
 	return $buttonarray;
 }
 
 function pvewhmcs_ClientAreaAllowedFunctions() {
-    return ['mountIso', 'loadIsoPage', 'umountIso', 'unmountIso', 'saveKernelConfig', 'loadBootOrderPage', 'saveBootOrderConfig', 'loadCustomArgsPage', 'saveCustomArgsConfig'];
+    return ['mountIso', 'loadIsoPage', 'umountIso', 'unmountIso', 'saveKernelConfig', 'loadBootOrderPage', 'saveBootOrderConfig'];
 }
 
 
@@ -931,89 +906,6 @@ function pvewhmcs_loadBootOrderPage($params) {
             'csrf_token' => $csrf_token,
         ),
     );
-}
-
-// ACTION: Save Custom QEMU Arguments by Client
-function pvewhmcs_saveCustomArgsConfig($params) {
-    session_start(); // Required to pass messages back via session
-    $serviceid = $params['serviceid'];
-
-    // Verify CSRF token
-    if (function_exists('check_token')) {
-        check_token("WHMCS.default");
-    } else {
-        $submitted_token = isset($_POST['token']) ? $_POST['token'] : '';
-        if (!isset($_SESSION['tkval']) || empty($_SESSION['tkval']) || $submitted_token !== $_SESSION['tkval']) {
-            if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); }
-            $_SESSION['pvewhmcs_custom_args_message'] = "Error: Security token validation failed. Please try again.";
-            header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadCustomArgsPage");
-            exit;
-        }
-        if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); }
-    }
-
-    $custom_args_string = isset($_POST['custom_qemu_args']) ? trim($_POST['custom_qemu_args']) : "";
-    // If string is empty after trim, effectively means user wants to remove custom args.
-    // Proxmox handles an empty 'args' value by removing it from the config.
-
-    logModuleCall('pvewhmcs', __FUNCTION__ . ' - Custom Args to be set', $custom_args_string, $_POST);
-
-    try {
-        $pveservice_details = Capsule::table('tblhosting')->find($serviceid);
-        if (!$pveservice_details) throw new Exception("Service not found.");
-        $pveserver_details = Capsule::table('tblservers')->where('id', '=', $pveservice_details->server)->first();
-        if (!$pveserver_details) throw new Exception("Server not found for service.");
-
-        $serverip = $pveserver_details->ipaddress;
-        $serverusername = $pveserver_details->username;
-        $api_data_pw = ['password2' => $pveserver_details->password];
-        $decrypted_password_result = localAPI('DecryptPassword', $api_data_pw);
-        $serverpassword = $decrypted_password_result['password'];
-
-        $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
-
-        if (!$proxmox->login()) throw new Exception("Failed to connect to Proxmox server.");
-
-        $nodes = $proxmox->get_node_list();
-        if (empty($nodes)) throw new Exception("No nodes found on Proxmox server.");
-        $first_node = $nodes[0];
-
-        $guest_db_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $serviceid)->first();
-        if (!$guest_db_info) throw new Exception("VM not found in module database.");
-        if ($guest_db_info->vtype !== 'qemu') throw new Exception("Custom QEMU arguments are only for QEMU/KVM VMs.");
-
-        // Update local database
-        Capsule::table('mod_pvewhmcs_vms')->where('id', $serviceid)->update(['custom_args' => $custom_args_string]);
-        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Local DB updated with custom_args', $custom_args_string, '');
-        
-        // Update Proxmox server config
-        // Sending an empty string for 'args' should make Proxmox remove the args line from the config file.
-        $config_params = ['args' => $custom_args_string];
-        $update_response = $proxmox->put("/nodes/{$first_node}/qemu/{$serviceid}/config", $config_params);
-        logModuleCall('pvewhmcs', __FUNCTION__ . ' (Proxmox update_config)', "/nodes/{$first_node}/qemu/{$serviceid}/config " . json_encode($config_params), $update_response);
-
-        if ($update_response !== true) {
-            $api_error_message = "Failed to update custom QEMU arguments on Proxmox.";
-            if(is_array($update_response) && isset($update_response['errors'])) {
-                $api_error_message .= " Details: " . json_encode($update_response['errors']);
-            } else if (is_string($update_response) && !empty($update_response)) {
-                $api_error_message .= " Details: " . htmlentities($update_response);
-            }
-            // Rollback local DB change if Proxmox update failed? For simplicity, we'll report error and leave DB as is.
-            // User can try again. Or, fetch original value before local update and revert on PVE failure.
-            throw new Exception($api_error_message);
-        }
-        
-        $_SESSION['pvewhmcs_custom_args_message'] = "Success: Custom QEMU arguments updated. A reboot may be required for changes to take full effect.";
-
-    } catch (Exception $e) {
-        logModuleCall('pvewhmcs', __FUNCTION__ . ' - Exception Caught', $custom_args_string, $e->getMessage() . $e->getTraceAsString());
-        $_SESSION['pvewhmcs_custom_args_message'] = "Error: " . htmlentities($e->getMessage());
-    }
-    
-    if (function_exists('generate_token')) { $_SESSION['tkval'] = generate_token('plain'); }
-    header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadCustomArgsPage");
-    exit;
 }
 
 // ACTION: Save Boot Order Configuration by Client
@@ -1148,76 +1040,6 @@ function pvewhmcs_saveBootOrderConfig($params) {
     header("Location: clientarea.php?action=productdetails&id=" . $serviceid . "&modop=custom&a=loadBootOrderPage");
     exit;
 }
-
-// ACTION: Display Custom QEMU Arguments Page
-function pvewhmcs_loadCustomArgsPage($params) {
-    // Gather access credentials for PVE
-    $pveservice = Capsule::table('tblhosting')->find($params['serviceid']);
-    $pveserver = Capsule::table('tblservers')->where('id', '=', $pveservice->server)->first();
-
-    $serverip = $pveserver->ipaddress;
-    $serverusername = $pveserver->username;
-    $api_data = array('password2' => $pveserver->password);
-    $serverpassword_decrypted = localAPI('DecryptPassword', $api_data);
-    $serverpassword = $serverpassword_decrypted['password'];
-
-    $proxmox = new PVE2_API($serverip, $serverusername, "pam", $serverpassword);
-
-    $current_custom_args = '';
-    $error_message = null;
-    $action_message = null; 
-
-    if (isset($_SESSION['pvewhmcs_custom_args_message'])) {
-        $action_message = $_SESSION['pvewhmcs_custom_args_message'];
-        unset($_SESSION['pvewhmcs_custom_args_message']);
-    }
-
-    $guest_info = Capsule::table('mod_pvewhmcs_vms')->where('id', '=', $params['serviceid'])->first();
-    if (!$guest_info) {
-        $error_message = "VM details not found in module database.";
-    } else {
-        $vm_type = $guest_info->vtype;
-        if ($vm_type !== 'qemu') {
-            $error_message = "Advanced boot options (custom QEMU arguments) are only applicable to QEMU/KVM virtual machines.";
-        } else {
-            // Fetch current args from local DB first, as Proxmox API might not always return them if they are complex or very long via standard config GET.
-            // Or, it's better to rely on what we have stored as the source of truth for this field.
-            $current_custom_args = $guest_info->custom_args ?: ''; 
-        }
-    }
-    
-    // If we wanted to double check with Proxmox (optional, local DB should be source of truth for this specific field)
-    // if (!$error_message && $proxmox->login()) {
-    //     $nodes = $proxmox->get_node_list();
-    //     if (!empty($nodes) && isset($nodes[0])) {
-    //         $first_node = $nodes[0];
-    //         $vm_config = $proxmox->get("/nodes/{$first_node}/qemu/{$params['serviceid']}/config");
-    //         if ($vm_config && isset($vm_config['args'])) {
-    //             // This could be used to compare or show Proxmox's current view, but might be complex.
-    //             // For simplicity, we'll primarily rely on our DB stored value.
-    //         }
-    //     }
-    // } elseif (!$error_message) {
-    //     $error_message = "Failed to login to Proxmox API to verify current settings (displaying stored value).";
-    // }
-
-    $csrf_token = '';
-    if (function_exists('generate_token')) {
-        $csrf_token = generate_token('plain');
-    }
-
-    return array(
-        'templatefile' => 'load_custom_args_area', 
-        'vars' => array(
-            'params' => $params,
-            'current_custom_args' => $current_custom_args,
-            'error_message' => $error_message,
-            'action_message' => $action_message,
-            'csrf_token' => $csrf_token,
-        ),
-    );
-}
-
 
 // ACTION: Save Kernel Configuration by Client
 function pvewhmcs_saveKernelConfig($params) {

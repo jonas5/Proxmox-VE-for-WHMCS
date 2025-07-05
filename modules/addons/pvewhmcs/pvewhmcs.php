@@ -1742,6 +1742,7 @@ function isHostUp($host, $port = 8006, $timeout = 5) {
 }
 
 
+
 // ADMIN ADDON: List Virtual Machines
 function pvewhmcs_list_vms_admin() {
 	echo '<h3>Managed Virtual Machines</h3>';
@@ -1814,69 +1815,62 @@ function pvewhmcs_list_vms_admin() {
 			$pve_node = 'N/A';
 
 			try {
+			        $proxmox = new PVE2_API($vm->server_ip, $vm->server_username, "pam", $serverpassword);
 
-				$proxmox = new PVE2_API($vm->server_ip, $vm->server_username, "pam", $serverpassword);
+			        if ($proxmox->login()) {
+			                $nodes = $proxmox->get_node_list();
 
-				if ($proxmox->login()) {
+			                $vm_resource_info = null;
+			                $cluster_resources = $proxmox->get("/cluster/resources?type=vm");
+			                foreach ($cluster_resources as $resource) {
+			                        if ($resource['vmid'] == $vm->vmid && $resource['type'] == $vm->vtype) {
+			                                $vm_resource_info = $resource;
+			                                $pve_node = $resource['node'];
+			                                break;
+			                        }
+			                }
 
-					$nodes = $proxmox->get_node_list();
-
-
-					// Attempt to find the VM across nodes if not stored, or use a stored node if available
-					// For now, we might need to iterate or have the node stored in mod_pvewhmcs_vms
-					// Let's assume for now it's on the first node or we need to enhance mod_pvewhmcs_vms to store node
-					
-					// Simplified: try first node. A more robust solution would check all nodes or store the node.
-					// $pve_node = !empty($nodes[0]) ? $nodes[0] : 'Unknown'; 
-					// Search for the node where the VM is located
-					$vm_resource_info = null;
-					$cluster_resources = $proxmox->get("/cluster/resources?type=vm");
-					foreach ($cluster_resources as $resource) {
-						if ($resource['vmid'] == $vm->vmid && $resource['type'] == $vm->vtype) {
-							$vm_resource_info = $resource;
-							$pve_node = $resource['node'];
-							break;
-						}
-					}
-
-					if ($pve_node !== 'N/A' && $vm_resource_info) {
-						$pve_status = ucfirst($vm_resource_info['status'] ?? 'unknown');
-						if ($vm->vtype == 'qemu') {
-							$vm_config = $proxmox->get("/nodes/{$pve_node}/qemu/{$vm->vmid}/config");
-							if (isset($vm_config['agent']) && preg_match('/1/', $vm_config['agent'])) {
-								// Agent is configured in Proxmox. Check if running.
-								// This is a basic check. get-networks is more reliable if agent is responsive.
-
-								$agent_info = $proxmox->get("/nodes/{$pve_node}/qemu/{$vm->vmid}/agent/ping");
-								error_log(sprintf('--> %s', json_encode($agent_info)));
-
-								if (isset($agent_info) && is_array($agent_info) && empty($agent_info['errors']) && $agent_info !== null) {
-				                                        // PVE API returns empty array on successful ping
-									$guest_agent_status = '<span style="color:green;">Running</span>';
-								} else {
-									$guest_agent_status = '<span style="color:orange;">Enabled, Not Responding</span>';
-								}
-							} else {
-								$guest_agent_status = '<span style="color:red;">Disabled</span>';
-								error_log(sprintf('%s', json_encode($vm_config)));
-
-							}
-						} else { // LXC
-							$guest_agent_status = 'N/A (LXC)';
-						}
-					} else {
-						$pve_status = '<span style="color:red;">Not Found on PVE</span>';
-						$pve_node = 'Unknown';
-					}
-				} else {
-					$pve_status = '<span style="color:red;">Login Failed</span>';
-				}
+			                if ($pve_node !== 'N/A' && $vm_resource_info) {
+			                        $pve_status = ucfirst($vm_resource_info['status'] ?? 'unknown');
+			                        if ($vm->vtype == 'qemu') {
+			                                // Only wrap the config/agent API calls in a try/catch
+			                                try {
+			                                        $vm_config = $proxmox->get("/nodes/{$pve_node}/qemu/{$vm->vmid}/config");
+			                                        if (isset($vm_config['agent']) && preg_match('/1/', $vm_config['agent'])) {
+			                                                $agent_info = $proxmox->post("/nodes/{$pve_node}/qemu/{$vm->vmid}/agent/ping", []);
+			                                                if (isset($agent_info) && is_array($agent_info) && empty($agent_info['errors']) && $agent_info !== null) {
+			                                                        $guest_agent_status = '<span style="color:green;">Running</span>';
+			                                                } else {
+			                                                        $guest_agent_status = '<span style="color:orange;">Enabled, Not Responding</span>';
+			                                                }
+			                                        } else {
+			                                                $guest_agent_status = '<span style="color:red;">Disabled</span>';
+			                                        }
+			                                } catch (Exception $e) {
+			                                        $guest_agent_status = '<span style="color:red;">API Error</span>';
+			                                        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                                                logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid} (agent/config)", $e->getMessage(), $e->getTraceAsString());
+			                                        }
+			                                }
+			                        } else { // LXC
+			                                $guest_agent_status = 'N/A (LXC)';
+			                        }
+			                } else {
+			                        $pve_status = '<span style="color:red;">Not Found on PVE</span>';
+			                        $pve_node = 'Unknown';
+			                }
+			        } else {
+			                $pve_status = '<span style="color:red;">Login Failed</span>';
+			        }
 			} catch (Exception $e) {
-				$pve_status = '<span style="color:red;">API Error</span>';
-				if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
-					logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid}", $e->getMessage(), $e->getTraceAsString());
-				}
-			}
+			        $pve_status = '<span style="color:red;">API Error</span>';
+			        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid}", $e->getMessage(), $e->getTraceAsString());
+			        }
+			}                                                      
+
+
+
 
 			$client_name = trim($vm->firstname . ' ' . $vm->lastname);
 			if (!empty($vm->companyname)) {
@@ -1919,6 +1913,10 @@ function pvewhmcs_list_vms_admin() {
 		}
 	}
 }
+
+
+
+
 
 // ADMIN ADDON: VM Action - Start
 function pvewhmcs_admin_vm_start($params) {
@@ -2143,10 +2141,10 @@ function pvewhmcs_view_vm_detail_admin($params) {
 		}
 		
 		$vm_db_info = Capsule::table('mod_pvewhmcs_vms')->where('id', $serviceid)->first();
-        if (!$vm_db_info) {
-            echo "<div class='alert alert-danger'>Error: VM details not found in module database for Service ID {$serviceid}.</div>";
-            return;
-        }
+		if (!$vm_db_info) {
+			echo "<div class='alert alert-danger'>Error: VM details not found in module database for Service ID {$serviceid}.</div>";
+			return;
+		}
 
 
 		$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $hosting_info->server_password_encrypted]);
@@ -2162,38 +2160,38 @@ function pvewhmcs_view_vm_detail_admin($params) {
 		if ($proxmox->login()) {
 			// Confirm VM exists on this node, or try to find it if node parameter was tentative
 			$current_vm_info_from_cluster = null;
-            $actual_node = $node; // Assume provided node is correct initially
+			$actual_node = $node; // Assume provided node is correct initially
 
-            $cluster_resources = $proxmox->get("/cluster/resources?type=vm");
-            foreach ($cluster_resources as $resource) {
-                if ($resource['vmid'] == $vmid && $resource['type'] == $vtype) {
-                    $current_vm_info_from_cluster = $resource;
-                    $actual_node = $resource['node']; // Update to actual node
-                    break;
-                }
-            }
+			$cluster_resources = $proxmox->get("/cluster/resources?type=vm");
+			foreach ($cluster_resources as $resource) {
+				if ($resource['vmid'] == $vmid && $resource['type'] == $vtype) {
+					$current_vm_info_from_cluster = $resource;
+					$actual_node = $resource['node']; // Update to actual node
+					break;
+				}
+			}
 
-            if (!$current_vm_info_from_cluster) {
-                echo "<div class='alert alert-warning'>VMID {$vmid} not found in Proxmox cluster resources. It might have been removed or is on a different node not accessible with current server config.</div>";
-            } else {
-                 $node = $actual_node; // Use the confirmed node from here
-            }
+			if (!$current_vm_info_from_cluster) {
+				echo "<div class='alert alert-warning'>VMID {$vmid} not found in Proxmox cluster resources. It might have been removed or is on a different node not accessible with current server config.</div>";
+			} else {
+				 $node = $actual_node; // Use the confirmed node from here
+			}
 
 			if($current_vm_info_from_cluster){
 				$vm_config = $proxmox->get("/nodes/{$node}/{$vtype}/{$vmid}/config");
 				$status_current = $proxmox->get("/nodes/{$node}/{$vtype}/{$vmid}/status/current");
 				
 				$vm_status_pve = $current_vm_info_from_cluster; // Use already fetched data
-                $vm_status_pve['uptime_formatted'] = isset($status_current['uptime']) ? time2format($status_current['uptime']) : 'N/A';
-                $vm_status_pve['cpu_percent'] = isset($status_current['cpu']) ? round($status_current['cpu'] * 100, 2) : 0;
-                $vm_status_pve['mem_percent'] = ($status_current['maxmem'] > 0) ? intval($status_current['mem'] * 100 / $status_current['maxmem']) : 0;
-                $vm_status_pve['disk_percent'] = ($status_current['maxdisk'] > 0) ? intval($status_current['disk'] * 100 / $status_current['maxdisk']) : 0;
+				$vm_status_pve['uptime_formatted'] = isset($status_current['uptime']) ? time2format($status_current['uptime']) : 'N/A';
+				$vm_status_pve['cpu_percent'] = isset($status_current['cpu']) ? round($status_current['cpu'] * 100, 2) : 0;
+				$vm_status_pve['mem_percent'] = ($status_current['maxmem'] > 0) ? intval($status_current['mem'] * 100 / $status_current['maxmem']) : 0;
+				$vm_status_pve['disk_percent'] = ($status_current['maxdisk'] > 0) ? intval($status_current['disk'] * 100 / $status_current['maxdisk']) : 0;
 				
 				if ($vtype == 'lxc') {
-                    $vm_status_pve['swap_percent'] = ($status_current['maxswap'] > 0) ? intval($status_current['swap'] * 100 / $status_current['maxswap']) : 0;
-                } else {
-                    $vm_status_pve['swap_percent'] = 0; // KVM swap is OS internal
-                }
+					$vm_status_pve['swap_percent'] = ($status_current['maxswap'] > 0) ? intval($status_current['swap'] * 100 / $status_current['maxswap']) : 0;
+				} else {
+					$vm_status_pve['swap_percent'] = 0; // KVM swap is OS internal
+				}
 
 
 				// Fetch RRD data (simplified, adapt from pvewhmcs_ClientArea)
@@ -2205,10 +2203,18 @@ function pvewhmcs_view_vm_detail_admin($params) {
 					'diskio' => 'diskread,diskwrite&cf=AVERAGE'
 				];
 
+
+
+
+				if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+					$debug_rrd_url = "/nodes/{$node}/{$vtype}/{$vmid}/rrd?timeframe={$tf}&ds={$metric_params}"; // Example for one call
+					logModuleCall('pvewhmcs_admin_rrd_debug', "Attempting RRD GET for URL (example)", $debug_rrd_url, '');
+				}
 				foreach ($metrics as $metric_key => $metric_params) {
-					foreach ($timeframes as $tf) {
+						foreach ($timeframes as $tf) { // $tf will be 'day', 'week', 'month', 'year'
 						try {
 							$rrd_data = $proxmox->get("/nodes/{$node}/{$vtype}/{$vmid}/rrd?timeframe={$tf}&ds={$metric_params}");
+							//$vm_rrd_stats[$metric_key][$tf] = isset($rrd_data['image']) ? base64_encode($rrd_data['image']) : '';
 							$vm_rrd_stats[$metric_key][$tf] = isset($rrd_data['image']) ? base64_encode(utf8_decode($rrd_data['image'])) : '';
 						} catch (Exception $e_rrd) {
 							$vm_rrd_stats[$metric_key][$tf] = ''; // Set to empty if RRD fetch fails
@@ -2298,14 +2304,16 @@ function pvewhmcs_view_vm_detail_admin($params) {
 
 		// Statistics Graphs (mimicking clientarea.tpl)
 		echo "<h4>VM Statistics Graphs</h4>";
+		$timeframes = ['day', 'week', 'month', 'year'];
 		if (!empty($vm_rrd_stats)) {
-			echo '<ul class="nav nav-tabs client-tabs" role="tablist">
-					<li class="active"><a data-toggle="tab" role="tab" href="#adminVmDailyStat">Daily</a></li>
-					<li><a data-toggle="tab" role="tab" href="#adminVmWeeklyStat">Weekly</a></li>
-					<li><a data-toggle="tab" role="tab" href="#adminVmMonthlyStat">Monthly</a></li>
-					<li><a data-toggle="tab" role="tab" href="#adminVmYearlyStat">Yearly</a></li>
-				  </ul>';
-			echo '<div class="tab-content admin-tabs">';
+			// Use unique IDs/classes to avoid conflict with other nav-tabs on the page
+			echo '<ul class="nav nav-tabs admin-vm-rrd-tabs" role="tablist" id="adminVmRrdTabList">';
+			foreach ($timeframes as $index => $tf_name) {
+				$active_class = ($index == 0) ? "active" : "";
+				echo "<li class='{$active_class}'><a data-toggle='tab' role='tab' href='#adminVm".ucfirst($tf_name)."Stat'>{$tf_name}</a></li>";
+			}
+			echo '</ul>';
+			echo '<div class="tab-content admin-vm-rrd-tabs-content">';
 			foreach ($timeframes as $index => $tf_name) {
 				$active_class = ($index == 0) ? "active" : "";
 				echo "<div id='adminVm".ucfirst($tf_name)."Stat' class='tab-pane {$active_class}'>";
@@ -2317,10 +2325,26 @@ function pvewhmcs_view_vm_detail_admin($params) {
 				echo "</div>";
 			}
 			echo '</div>'; // tab-content
+
+			// Add a script to ensure only this tab group is affected by tab clicks
+			echo '
+<script>
+jQuery(function($){
+	$("#adminVmRrdTabList a[data-toggle=\'tab\']").on("click", function(e){
+		e.preventDefault();
+		var $this = $(this);
+		var target = $this.attr("href");
+		$("#adminVmRrdTabList li").removeClass("active");
+		$this.parent().addClass("active");
+		$(".admin-vm-rrd-tabs-content .tab-pane").removeClass("active");
+		$(target).addClass("active");
+	});
+});
+</script>';
+
 		} else {
 			echo "<p>No statistics graph data available or Proxmox login failed.</p>";
 		}
-
 
 	} catch (Exception $e) {
 		echo "<div class='alert alert-danger'>An error occurred while fetching VM details: " . $e->getMessage() . "</div>";
@@ -2331,5 +2355,3 @@ function pvewhmcs_view_vm_detail_admin($params) {
 	echo "<p><a href='".pvewhmcs_BASEURL."&tab=vms' class='btn btn-default'>&laquo; Back to VM List</a></p>";
 }
 
-
-?>

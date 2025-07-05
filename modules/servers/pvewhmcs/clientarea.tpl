@@ -56,46 +56,103 @@
 	</div>
 
 	<div class="container">
-	{if ($smarty.get.a eq 'vmStat')}
+	{if ($smarty.get.a eq 'vmStat' or $smarty.get.modaction eq 'vmstats')}
 
 	<h4>VM Statistics</h4>
-	{* Specific sub-tabs for statistics *}
-	<ul class="nav nav-tabs client-tabs" role="tab-list">
-		<li class="active"><a id="dailytab" data-toggle="tab" role="tab" href="#dailystat">Daily</a></li>
-		<li><a id="weeklystat_tab" data-toggle="tab" role="tab" href="#weeklystat">Weekly</a></li>
-		<li><a id="monthlystat_tab" data-toggle="tab" role="tab" href="#monthlystat">Monthly</a></li>
-		<li><a id="yearlystat_tab" data-toggle="tab" role="tab" href="#yearlystat">Yearly</a></li>
+	<ul class="nav nav-tabs" role="tablist" id="vmStatsTabs">
+		<li class="active"><a href="#statsDaily" role="tab" data-toggle="tab">Daily</a></li>
+		<li><a href="#statsWeekly" role="tab" data-toggle="tab">Weekly</a></li>
+		<li><a href="#statsMonthly" role="tab" data-toggle="tab">Monthly</a></li>
+		<li><a href="#statsYearly" role="tab" data-toggle="tab">Yearly</a></li>
 	</ul>
-	<div class="tab-content admin-tabs">
-		<div id="dailystat" class="tab-pane active">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['day']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['day']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['day']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['day']}"/>
+
+	<div class="tab-content" style="padding-top:10px;">
+		<div class="tab-pane active" id="statsDaily">
+			{if $vm_statistics.cpu.day}<img src="data:image/png;base64,{$vm_statistics.cpu.day}" alt="CPU Daily Stats" class="img-responsive" />{else}<p>Daily CPU statistics are not available.</p>{/if}
+			{if $vm_statistics.maxmem.day}<img src="data:image/png;base64,{$vm_statistics.maxmem.day}" alt="Memory Daily Stats" class="img-responsive" />{else}<p>Daily Memory statistics are not available.</p>{/if}
+			{if $vm_statistics.netinout.day}<img src="data:image/png;base64,{$vm_statistics.netinout.day}" alt="Network Daily Stats" class="img-responsive" />{else}<p>Daily Network statistics are not available.</p>{/if}
+			{if $vm_statistics.diskrw.day}<img src="data:image/png;base64,{$vm_statistics.diskrw.day}" alt="Disk I/O Daily Stats" class="img-responsive" />{else}<p>Daily Disk I/O statistics are not available.</p>{/if}
 		</div>
-		<div id="weeklystat" class="tab-pane">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['week']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['week']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['week']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['week']}"/>
+		<div class="tab-pane" id="statsWeekly">
+			{if $vm_statistics.cpu.week}<img src="data:image/png;base64,{$vm_statistics.cpu.week}" alt="CPU Weekly Stats" class="img-responsive" />{else}<p>Weekly CPU statistics are not available.</p>{/if}
+			{if $vm_statistics.maxmem.week}<img src="data:image/png;base64,{$vm_statistics.maxmem.week}" alt="Memory Weekly Stats" class="img-responsive" />{else}<p>Weekly Memory statistics are not available.</p>{/if}
+			{if $vm_statistics.netinout.week}<img src="data:image/png;base64,{$vm_statistics.netinout.week}" alt="Network Weekly Stats" class="img-responsive" />{else}<p>Weekly Network statistics are not available.</p>{/if}
+			{if $vm_statistics.diskrw.week}<img src="data:image/png;base64,{$vm_statistics.diskrw.week}" alt="Disk I/O Weekly Stats" class="img-responsive" />{else}<p>Weekly Disk I/O statistics are not available.</p>{/if}
 		</div>
-		<div id="monthlystat" class="tab-pane">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['month']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['month']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['month']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['month']}"/>
+		<div class="tab-pane" id="statsMonthly">
+			{if $vm_statistics.cpu.month}<img src="data:image/png;base64,{$vm_statistics.cpu.month}" alt="CPU Monthly Stats" class="img-responsive" />{else}<p>Monthly CPU statistics are not available.</p>{/if}
+			{if $vm_statistics.maxmem.month}<img src="data:image/png;base64,{$vm_statistics.maxmem.month}" alt="Memory Monthly Stats" class="img-responsive" />{else}<p>Monthly Memory statistics are not available.</p>{/if}
+			{if $vm_statistics.netinout.month}<img src="data:image/png;base64,{$vm_statistics.netinout.month}" alt="Network Monthly Stats" class="img-responsive" />{else}<p>Monthly Network statistics are not available.</p>{/if}
+			{if $vm_statistics.diskrw.month}<img src="data:image/png;base64,{$vm_statistics.diskrw.month}" alt="Disk I/O Monthly Stats" class="img-responsive" />{else}<p>Monthly Disk I/O statistics are not available.</p>{/if}
 		</div>
-		<div id="yearlystat" class="tab-pane">
-			<img src="data:image/png;base64,{$vm_statistics['cpu']['year']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['maxmem']['year']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['netinout']['year']}"/>
-			<img src="data:image/png;base64,{$vm_statistics['diskrw']['year']}"/>
+		<div class="tab-pane" id="statsYearly">
+			{if $vm_statistics.cpu.year}<img src="data:image/png;base64,{$vm_statistics.cpu.year}" alt="CPU Yearly Stats" class="img-responsive" />{else}<p>Yearly CPU statistics are not available.</p>{/if}
+			{if $vm_statistics.maxmem.year}<img src="data:image/png;base64,{$vm_statistics.maxmem.year}" alt="Memory Yearly Stats" class="img-responsive" />{else}<p>Yearly Memory statistics are not available.</p>{/if}
+			{if $vm_statistics.netinout.year}<img src="data:image/png;base64,{$vm_statistics.netinout.year}" alt="Network Yearly Stats" class="img-responsive" />{else}<p>Yearly Network statistics are not available.</p>{/if}
+			{if $vm_statistics.diskrw.year}<img src="data:image/png;base64,{$vm_statistics.diskrw.year}" alt="Disk I/O Yearly Stats" class="img-responsive" />{else}<p>Yearly Disk I/O statistics are not available.</p>{/if}
 		</div>
 	</div>
 
+	<script type="text/javascript">
+		jQuery(document).ready(function($) {
+			$('#vmStatsTabs a[data-toggle="tab"]').on('click', function (e) {
+				e.preventDefault();
 
+				// Explicitly manage active class on li elements
+				$(this).closest('ul').find('li.active').removeClass('active');
+				$(this).parent('li').addClass('active');
 
-       {elseif $smarty.get.modaction eq 'kernelconfig'}
+				// Show the tab content (Bootstrap's default action)
+				$(this).tab('show');
+			});
+		});
+	</script>
+
+<style type="text/css">
+#vmStatsTabs {
+    border-bottom: 1px solid #ddd;
+}
+#vmStatsTabs > li > a {
+    color: #555;
+    background-color: #f9f9f9;
+    border: 1px solid #ddd;
+    border-bottom-color: transparent;
+    border-radius: 4px 4px 0 0;
+    padding: 8px 12px;
+    margin-right: 2px;
+}
+#vmStatsTabs > li > a:hover,
+#vmStatsTabs > li > a:focus {
+    border-color: #eee #eee #ddd;
+    background-color: #eee;
+    color: #333;
+}
+#vmStatsTabs > li.active > a,
+#vmStatsTabs > li.active > a:hover,
+#vmStatsTabs > li.active > a:focus {
+    color: #fff;
+    background-color: #007bff; /* A common primary blue, adjust if WHMCS theme uses a different primary */
+    border: 1px solid #007bff;
+    border-bottom-color: transparent;
+    cursor: default;
+}
+.tab-content {
+    border: 1px solid #ddd;
+    border-top: 0;
+    padding: 15px;
+    background-color: #fff;
+    border-radius: 0 0 4px 4px;
+}
+/* Ensure images within tab panes are responsive and don't overflow */
+.tab-content > .tab-pane img {
+    max-width: 100%;
+    height: auto;
+    display: block; /* Helps with spacing and layout */
+    margin-bottom: 10px; /* Add some space between stacked images */
+}
+</style>
+
+	{elseif $smarty.get.modaction eq 'kernelconfig'}
 
 	<div class="container kernel-config">
 

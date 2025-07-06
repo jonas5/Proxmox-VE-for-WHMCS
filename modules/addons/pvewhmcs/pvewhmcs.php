@@ -1741,6 +1741,38 @@ function isHostUp($host, $port = 8006, $timeout = 5) {
     return false;
 }
 
+// New helper function to extract only relevant network data from a full RRD dataset.
+// It looks for 'time', 'netin', and 'netout' keys in each data point.
+if (!function_exists('pvewhmcs_extract_network_rrd_data')) {
+    function pvewhmcs_extract_network_rrd_data($full_rrd_array) {
+        $network_data_points = [];
+        if (empty($full_rrd_array) || !is_array($full_rrd_array)) {
+            return $network_data_points; // Return empty if input is not usable
+        }
+
+        foreach ($full_rrd_array as $data_point) {
+            // Check if the essential keys 'time', 'netin', and 'netout' are all present
+            if (isset($data_point['time']) && isset($data_point['netin']) && isset($data_point['netout'])) {
+                $network_data_points[] = [
+                    'time'   => (int)$data_point['time'], // Ensure time is integer
+                    'netin'  => (float)$data_point['netin'], // Ensure numeric
+                    'netout' => (float)$data_point['netout'], // Ensure numeric
+                ];
+            } else {
+                // This data point is missing one or more essential keys.
+                // Log it if debug mode is on and then skip this data point.
+                if (isset($data_point['time']) && Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                    logModuleCall('pvewhmcs_rrd_extract', "Skipped RRD data point for time: " . $data_point['time'] . " due to missing netin/netout keys.", $data_point, '');
+                } elseif (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                    // Log if even time is missing, though less likely to be useful without time
+                     logModuleCall('pvewhmcs_rrd_extract', "Skipped RRD data point due to missing time or other essential keys.", $data_point, '');
+                }
+            }
+        }
+        return $network_data_points;
+    }
+}
+
 
 
 // ADMIN ADDON: List Virtual Machines
@@ -1787,6 +1819,8 @@ function pvewhmcs_list_vms_admin() {
 						<th>IP Address</th>
 						<th>Guest Agent</th>
 						<th>Node</th>
+						<th>Traffic In (Month)</th>
+						<th>Traffic Out (Month)</th>
 						<th>Actions</th>
 					</tr>
 				</thead>
@@ -1801,75 +1835,142 @@ function pvewhmcs_list_vms_admin() {
 			if (!isHostUp($vm->server_ip, $port)) {
 			    // Host is down, handle accordingly
 			    error_log(sprintf("Proxmox host %s is unreachable on port %s.", $vm->server_ip, $port));
-			    return;
-			    // Optionally return an error or skip the operation
-			}
+			    // Display N/A for PVE specific fields if host is down
+			    $pve_status = '<span style="color:red;">Host Down</span>';
+			    $guest_agent_status = 'N/A';
+			    $pve_node = 'N/A';
+			    $monthly_traffic_in = 'N/A';
+			    $monthly_traffic_out = 'N/A';
+			} else {
+			    // Decrypt server password
+			    $serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $vm->server_password_encrypted]);
+			    $serverpassword = $serverpassword_decrypted['password'];
 
+			    $pve_status = 'N/A';
+			    $guest_agent_status = 'N/A';
+			    $pve_node = 'N/A';
+			    $monthly_traffic_in = 'N/A';
+			    $monthly_traffic_out = 'N/A';
 
-			// Decrypt server password
-			$serverpassword_decrypted = localAPI('DecryptPassword', ['password2' => $vm->server_password_encrypted]);
-			$serverpassword = $serverpassword_decrypted['password'];
+			    try {
+			            $proxmox = new PVE2_API($vm->server_ip, $vm->server_username, "pam", $serverpassword);
 
-			$pve_status = 'N/A';
-			$guest_agent_status = 'N/A';
-			$pve_node = 'N/A';
+			            if ($proxmox->login()) {
+			                    $nodes = $proxmox->get_node_list();
 
-			try {
-			        $proxmox = new PVE2_API($vm->server_ip, $vm->server_username, "pam", $serverpassword);
+			                    $vm_resource_info = null;
+			                    $cluster_resources = $proxmox->get("/cluster/resources?type=vm");
+			                    foreach ($cluster_resources as $resource) {
+			                            if ($resource['vmid'] == $vm->vmid && $resource['type'] == $vm->vtype) {
+			                                    $vm_resource_info = $resource;
+			                                    $pve_node = $resource['node'];
+			                                    break;
+			                            }
+			                    }
 
-			        if ($proxmox->login()) {
-			                $nodes = $proxmox->get_node_list();
+			                    if ($pve_node !== 'N/A' && $vm_resource_info) {
+			                            $pve_status = ucfirst($vm_resource_info['status'] ?? 'unknown');
+			                            if ($vm->vtype == 'qemu') {
+			                                    // Only wrap the config/agent API calls in a try/catch
+			                                    try {
+			                                            $vm_config = $proxmox->get("/nodes/{$pve_node}/qemu/{$vm->vmid}/config");
+			                                            if (isset($vm_config['agent']) && preg_match('/1/', $vm_config['agent'])) {
+			                                                    $agent_info = $proxmox->post("/nodes/{$pve_node}/qemu/{$vm->vmid}/agent/ping", []);
+			                                                    if (isset($agent_info) && is_array($agent_info) && empty($agent_info['errors']) && $agent_info !== null) {
+			                                                            $guest_agent_status = '<span style="color:green;">Running</span>';
+			                                                    } else {
+			                                                            $guest_agent_status = '<span style="color:orange;">Enabled, Not Responding</span>';
+			                                                    }
+			                                            } else {
+			                                                    $guest_agent_status = '<span style="color:red;">Disabled</span>';
+			                                            }
+			                                    } catch (Exception $e) {
+			                                            $guest_agent_status = '<span style="color:red;">API Error</span>';
+			                                            if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                                                    logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid} (agent/config)", $e->getMessage(), $e->getTraceAsString());
+			                                            }
+			                                    }
+			                            } else { // LXC
+			                                    $guest_agent_status = 'N/A (LXC)';
+			                            }
 
-			                $vm_resource_info = null;
-			                $cluster_resources = $proxmox->get("/cluster/resources?type=vm");
-			                foreach ($cluster_resources as $resource) {
-			                        if ($resource['vmid'] == $vm->vmid && $resource['type'] == $vm->vtype) {
-			                                $vm_resource_info = $resource;
-			                                $pve_node = $resource['node'];
-			                                break;
-			                        }
-			                }
-
-			                if ($pve_node !== 'N/A' && $vm_resource_info) {
-			                        $pve_status = ucfirst($vm_resource_info['status'] ?? 'unknown');
-			                        if ($vm->vtype == 'qemu') {
-			                                // Only wrap the config/agent API calls in a try/catch
+			                            // Fetch and calculate monthly traffic data if node is known
+			                            if ($pve_node !== 'N/A' && $pve_node !== 'Unknown' && $vm_resource_info && $vm_resource_info['status'] !== 'unknown') {
 			                                try {
-			                                        $vm_config = $proxmox->get("/nodes/{$pve_node}/qemu/{$vm->vmid}/config");
-			                                        if (isset($vm_config['agent']) && preg_match('/1/', $vm_config['agent'])) {
-			                                                $agent_info = $proxmox->post("/nodes/{$pve_node}/qemu/{$vm->vmid}/agent/ping", []);
-			                                                if (isset($agent_info) && is_array($agent_info) && empty($agent_info['errors']) && $agent_info !== null) {
-			                                                        $guest_agent_status = '<span style="color:green;">Running</span>';
-			                                                } else {
-			                                                        $guest_agent_status = '<span style="color:orange;">Enabled, Not Responding</span>';
-			                                                }
+			                                    // Attempt to get RRD data for the current month.
+			                                    // This call fetches all RRD data sources for the VM for the month.
+			                                    $rrd_traffic_data_full = $proxmox->get("/nodes/{$pve_node}/{$vm->vtype}/{$vm->vmid}/rrddata?timeframe=month");
+
+			                                    if ($rrd_traffic_data_full && is_array($rrd_traffic_data_full)) {
+			                                        // Extract only network-relevant data points ('time', 'netin', 'netout')
+			                                        $network_rrd_points = pvewhmcs_extract_network_rrd_data($rrd_traffic_data_full);
+
+			                                        if (empty($network_rrd_points)) {
+			                                            // If, after extraction, there are no points with netin/netout.
+			                                            $monthly_traffic_in = '<span style="color:orange;" title="No netin/netout data found in RRD output.">Data N/A</span>';
+			                                            $monthly_traffic_out = $monthly_traffic_in;
+			                                            if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                                                logModuleCall('pvewhmcs_admin_list_vms_traffic', "Extracted RRD network points are empty for VMID {$vm->vmid}", $rrd_traffic_data_full, '');
+			                                            }
 			                                        } else {
-			                                                $guest_agent_status = '<span style="color:red;">Disabled</span>';
+			                                            // Calculate totals from the extracted network RRD data array.
+			                                            $traffic_totals = pvewhmcs_calculate_monthly_traffic_from_rrd($network_rrd_points);
+			                                            if ($traffic_totals['error']) {
+			                                                // Display error from calculation (e.g., counter reset, no data for current month)
+			                                                $monthly_traffic_in = sprintf('<span style="color:orange;" title="%s">%s GB</span>', htmlentities($traffic_totals['error']), number_format((float)$traffic_totals['in'], 2, '.', ''));
+			                                                $monthly_traffic_out = sprintf('<span style="color:orange;" title="%s">%s GB</span>', htmlentities($traffic_totals['error']), number_format((float)$traffic_totals['out'], 2, '.', ''));
+			                                                //$monthly_traffic_out = $monthly_traffic_in;
+			                                                if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                                                    logModuleCall('pvewhmcs_admin_list_vms_traffic', "RRD Traffic Calc Error VMID {$vm->vmid}: " . $traffic_totals['error'], $network_rrd_points, '');
+			                                                }
+			                                            } else {
+			                                                // Format calculated bytes into readable string (GB, TB etc.)
+			                                                $monthly_traffic_in = pvewhmcs_format_bytes($traffic_totals['in']);
+			                                                $monthly_traffic_out = pvewhmcs_format_bytes($traffic_totals['out']);
+			                                            }
 			                                        }
-			                                } catch (Exception $e) {
-			                                        $guest_agent_status = '<span style="color:red;">API Error</span>';
+			                                    } else {
+			                                        // RRD data fetch failed or returned empty/invalid overall
+			                                        $monthly_traffic_in = '<span style="color:red;">RRD N/A</span>';
+			                                        $monthly_traffic_out = $monthly_traffic_in;
 			                                        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
-			                                                logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid} (agent/config)", $e->getMessage(), $e->getTraceAsString());
+			                                            logModuleCall('pvewhmcs_admin_list_vms_traffic', "RRD Fetch Failed/Empty for VMID {$vm->vmid}", $rrd_traffic_data_full, '');
 			                                        }
+			                                    }
+			                                } catch (Exception $e_rrd) {
+			                                    // Exception during Proxmox API call for RRD data
+			                                    $monthly_traffic_in = '<span style="color:red;">RRD API Err</span>';
+			                                    $monthly_traffic_out = $monthly_traffic_in;
+			                                    if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                                        logModuleCall('pvewhmcs_admin_list_vms_traffic', "RRD API Exception for VMID {$vm->vmid}", $e_rrd->getMessage(), $e_rrd->getTraceAsString());
+			                                    }
 			                                }
-			                        } else { // LXC
-			                                $guest_agent_status = 'N/A (LXC)';
-			                        }
-			                } else {
-			                        $pve_status = '<span style="color:red;">Not Found on PVE</span>';
-			                        $pve_node = 'Unknown';
-			                }
-			        } else {
-			                $pve_status = '<span style="color:red;">Login Failed</span>';
-			        }
-			} catch (Exception $e) {
-			        $pve_status = '<span style="color:red;">API Error</span>';
-			        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
-			                logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid}", $e->getMessage(), $e->getTraceAsString());
-			        }
-			}                                                      
-
-
+			                            } else {
+			                                 // Conditions not met for fetching traffic data (e.g., VM not running, node unknown)
+			                                 $monthly_traffic_in = 'N/A';
+			                                 $monthly_traffic_out = 'N/A';
+			                            }
+			                    } else {
+			                            // VM not found on Proxmox cluster via /cluster/resources
+			                            $pve_status = '<span style="color:red;">Not Found on PVE</span>';
+			                            $pve_node = 'Unknown';
+			                            $monthly_traffic_in = 'N/A';
+			                            $monthly_traffic_out = 'N/A';
+			                    }
+			            } else {
+			                    $pve_status = '<span style="color:red;">Login Failed</span>';
+			                    $monthly_traffic_in = 'N/A';
+			                    $monthly_traffic_out = 'N/A';
+			            }
+			    } catch (Exception $e) {
+			            $pve_status = '<span style="color:red;">API Error</span>';
+			            $monthly_traffic_in = 'N/A';
+			            $monthly_traffic_out = 'N/A';
+			            if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                    logModuleCall('pvewhmcs_admin_list_vms', "PVE API Error for VMID {$vm->vmid}", $e->getMessage(), $e->getTraceAsString());
+			            }
+			    }
+			}
 
 
 			$client_name = trim($vm->firstname . ' ' . $vm->lastname);
@@ -1879,7 +1980,7 @@ function pvewhmcs_list_vms_admin() {
 			
 			// Action buttons - URLs will be placeholders for now
 			$actions = '';
-			if ($pve_status !== 'N/A' && strpos($pve_status, 'Error') === false && strpos($pve_status, 'Failed') === false && strpos($pve_status, 'Not Found') === false) {
+			if ($pve_status !== 'N/A' && strpos($pve_status, 'Error') === false && strpos($pve_status, 'Failed') === false && strpos($pve_status, 'Not Found') === false && strpos($pve_status, 'Host Down') === false) {
 				$base_action_url = pvewhmcs_BASEURL . "&tab=vms&vmid={$vm->vmid}&node={$pve_node}&vtype={$vm->vtype}";
 				if ($pve_status == 'Stopped') {
 					$actions .= "<a href='{$base_action_url}&vm_action=admin_vm_start' class='btn btn-xs btn-success'>Start</a> ";
@@ -1901,6 +2002,8 @@ function pvewhmcs_list_vms_admin() {
 					<td>{$vm->vm_main_ip}</td>
 					<td>{$guest_agent_status}</td>
 					<td>{$pve_node}</td>
+					<td>{$monthly_traffic_in}</td>
+					<td>{$monthly_traffic_out}</td>
 					<td>{$actions}</td>
 				  </tr>";
 		}
@@ -1915,7 +2018,126 @@ function pvewhmcs_list_vms_admin() {
 }
 
 
+// Helper function to format bytes into a readable format (KB, MB, GB, TB)
+// Used for displaying network traffic in a user-friendly way.
+if (!function_exists('pvewhmcs_format_bytes')) {
+    function pvewhmcs_format_bytes($bytes, $precision = 2) {
+        $units = array('B', 'KB', 'MB', 'GB', 'TB');
+        $bytes = max($bytes, 0);
+        $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
+        $pow = min($pow, count($units) - 1);
+        // Handle case where $bytes is 0 to avoid division by zero in log(1024) if $pow becomes very small.
+        if ($bytes == 0) {
+            return '0 ' . $units[0];
+        }
+        $bytes /= pow(1024, $pow);
+        return round($bytes, $precision) . ' ' . $units[$pow];
+    }
+}
 
+// Helper function to calculate total traffic from Proxmox RRD data for the current month
+// Takes raw RRD data array from Proxmox API (/nodes/{node}/{type}/{vmid}/rrddata?timeframe=month)
+// and attempts to calculate total bytes in/out for the current calendar month.
+// Assumes 'netin' and 'netout' in RRD data are cumulative byte counters.
+// Handles cases where data might be missing or counter resets occur (with caveats).
+if (!function_exists('pvewhmcs_calculate_monthly_traffic_from_rrd')) {
+    function pvewhmcs_calculate_monthly_traffic_from_rrd($rrd_data_array, $data_key_in = 'netin', $data_key_out = 'netout') {
+        $total_in = 0;
+        $total_out = 0;
+        // Ensure current time is in UTC for proper month calculation consistent with potential server settings
+        // This defines the window for which we are calculating traffic.
+        $current_time_utc = new DateTime("now", new DateTimeZone("UTC"));
+        $current_month_start_timestamp = (new DateTime($current_time_utc->format("Y-m-01 00:00:00"), new DateTimeZone("UTC")))->getTimestamp();
+        $next_month_start_timestamp = (new DateTime($current_time_utc->format("Y-m-01 00:00:00"), new DateTimeZone("UTC")))->modify('+1 month')->getTimestamp();
+
+        // Validate input RRD data
+        if (empty($rrd_data_array) || !is_array($rrd_data_array)) {
+            return ['in' => 0, 'out' => 0, 'error' => 'No RRD data provided or invalid format'];
+        }
+
+        $first_in_of_month = null;
+        $last_in_of_month = null;
+        $first_out_of_month = null;
+        $last_out_of_month = null;
+
+        $found_first_entry_for_month = false;
+        $last_valid_timestamp_in_month = 0; // Tracks the timestamp of the last considered data point
+
+        // Iterate over each data point from RRD
+        foreach ($rrd_data_array as $data_point) {
+            $timestamp = isset($data_point['time']) ? intval($data_point['time']) : 0;
+
+            // Filter data points to include only those within the current calendar month
+            if ($timestamp < $current_month_start_timestamp || $timestamp >= $next_month_start_timestamp) {
+                continue; // Skip data outside the current month
+            }
+
+            // Ensure the required data keys ('netin', 'netout') exist for the data point
+            if (!isset($data_point[$data_key_in]) || !isset($data_point[$data_key_out])) {
+                if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                    logModuleCall('pvewhmcs_rrd_calc', "Missing '{$data_key_in}' or '{$data_key_out}' key for data point at timestamp {$timestamp}", $data_point, '');
+                }
+                continue;
+            }
+
+            $current_netin = floatval($data_point[$data_key_in]);
+            $current_netout = floatval($data_point[$data_key_out]);
+
+            // Capture the first relevant data point's values for the month
+            if (!$found_first_entry_for_month) {
+                $first_in_of_month = $current_netin;
+                $first_out_of_month = $current_netout;
+                $found_first_entry_for_month = true;
+            }
+
+            // Update with the latest data point encountered so far within the month
+            // This ensures $last_in_of_month and $last_out_of_month hold the values from the final data point of the month.
+            if($timestamp >= $last_valid_timestamp_in_month){
+                 $last_in_of_month = $current_netin;
+                 $last_out_of_month = $current_netout;
+                 $last_valid_timestamp_in_month = $timestamp;
+            }
+        }
+
+        // Proceed with calculation if we found at least one data point and have last values
+        if ($found_first_entry_for_month && $last_in_of_month !== null && $last_out_of_month !== null) {
+            // Assumption: RRD 'netin'/'netout' are cumulative byte counters.
+            // Traffic for the month = (value at end of month) - (value at start of month).
+            $total_in = $last_in_of_month - $first_in_of_month;
+            $total_out = $last_out_of_month - $first_out_of_month;
+
+            $error_message_in = null;
+            $error_message_out = null;
+
+            // Handle counter resets (where end value < start value for the period)
+            // This is a simplified handling. True accuracy with resets is complex without knowing max counter value or having interval deltas.
+            if ($total_in < 0) {
+                $error_message_in = "Counter reset detected for IN traffic. Sum may be inaccurate. Last value in month: " . pvewhmcs_format_bytes($last_in_of_month);
+                $total_in = $last_in_of_month; // Fallback: traffic is at least the value since the last reset in this period.
+            }
+            if ($total_out < 0) {
+                $formatted_last_out = pvewhmcs_format_bytes($last_out_of_month);
+                $error_message_out = "Counter reset detected for OUT traffic. Sum may be inaccurate. Last value in month: " . $formatted_last_out;
+                $total_out = $last_out_of_month; // Fallback
+            }
+
+            // Consolidate error messages if any
+            $final_error_message = null;
+            if($error_message_in && $error_message_out) $final_error_message = "IN: {$error_message_in} | OUT: {$error_message_out}";
+            else if ($error_message_in) $final_error_message = $error_message_in;
+            else if ($error_message_out) $final_error_message = $error_message_out;
+
+            return ['in' => $total_in, 'out' => $total_out, 'error' => $final_error_message];
+
+        } elseif ($found_first_entry_for_month && ($last_in_of_month === null || $last_out_of_month === null)) {
+            // This state indicates an issue, e.g., first entry found but no subsequent valid 'last' entry was set.
+            return ['in' => 0, 'out' => 0, 'error' => 'Incomplete RRD data points for month after finding first entry.'];
+        }
+
+        // Default return if no suitable RRD data was found for the current month.
+        return ['in' => 0, 'out' => 0, 'error' => 'No RRD data found for current month range or first/last entries missing.'];
+    }
+}
 
 
 // ADMIN ADDON: VM Action - Start

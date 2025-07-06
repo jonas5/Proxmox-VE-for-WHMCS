@@ -2115,7 +2115,8 @@ if (!function_exists('pvewhmcs_calculate_monthly_traffic_from_rrd')) {
                 $total_in = $last_in_of_month; // Fallback: traffic is at least the value since the last reset in this period.
             }
             if ($total_out < 0) {
-                $error_message_out = "Counter reset detected for OUT traffic. Sum may be inaccurate. Last value in month: " . pvewhmcs_format_bytes($last_out_of_month);
+                $formatted_last_out = pvewhmcs_format_bytes($last_out_of_month);
+                $error_message_out = "Counter reset detected for OUT traffic. Sum may be inaccurate. Last value in month: " . $formatted_last_out;
                 $total_out = $last_out_of_month; // Fallback
             }
 

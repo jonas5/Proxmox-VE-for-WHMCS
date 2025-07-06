@@ -1741,6 +1741,38 @@ function isHostUp($host, $port = 8006, $timeout = 5) {
     return false;
 }
 
+// New helper function to extract only relevant network data from a full RRD dataset.
+// It looks for 'time', 'netin', and 'netout' keys in each data point.
+if (!function_exists('pvewhmcs_extract_network_rrd_data')) {
+    function pvewhmcs_extract_network_rrd_data($full_rrd_array) {
+        $network_data_points = [];
+        if (empty($full_rrd_array) || !is_array($full_rrd_array)) {
+            return $network_data_points; // Return empty if input is not usable
+        }
+
+        foreach ($full_rrd_array as $data_point) {
+            if (isset($data_point['time']) && isset($data_point['netin']) && isset($data_point['netout'])) {
+                $network_data_points[] = [
+                    'time'   => $data_point['time'],
+                    'netin'  => $data_point['netin'],
+                    'netout' => $data_point['netout'],
+                ];
+            } elseif (isset($data_point['time']) && (!isset($data_point['netin']) || !isset($data_point['netout'])) ) {
+                // If time is present but netin/netout are missing for a point,
+                // we can add it with 0 values or skip. Skipping is safer to avoid miscalculation.
+                // For calculation, points missing these values are not useful.
+                // However, to ensure the calculate function gets all *time* entries if that's important for its logic:
+                // For now, we only include points that have all three.
+                 if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+                    // Log that a data point was skipped due to missing netin/netout
+                    // logModuleCall('pvewhmcs_rrd_extract', "Skipped RRD data point due to missing netin/netout, time: " . $data_point['time'], $data_point, '');
+                }
+            }
+        }
+        return $network_data_points;
+    }
+}
+
 
 
 // ADMIN ADDON: List Virtual Machines
@@ -1865,15 +1897,39 @@ function pvewhmcs_list_vms_admin() {
 			                            try {
 			                                // Attempt to get RRD data for 'netin' and 'netout' for the current month.
 			                                // The PVE2_API get method fetches the data, which is then processed.
-			                                // Added &ds=netin,netout to specify desired data sources
-			                                $rrd_traffic_data = $proxmox->get("/nodes/{$pve_node}/{$vm->vtype}/{$vm->vmid}/rrddata?timeframe=month&ds=netin,netout");
+			                                // Reverted: Removed &ds=netin,netout to get full dataset for now
+			                                $rrd_traffic_data_full = $proxmox->get("/nodes/{$pve_node}/{$vm->vtype}/{$vm->vmid}/rrddata?timeframe=month");
 
-			                                if ($rrd_traffic_data && is_array($rrd_traffic_data)) {
-			                                    // Calculate totals from the RRD data array.
-			                                    $traffic_totals = pvewhmcs_calculate_monthly_traffic_from_rrd($rrd_traffic_data);
-			                                    if ($traffic_totals['error']) {
-			                                        // Display error from calculation (e.g., counter reset, no data)
-			                                        $monthly_traffic_in = '<span style="color:orange;" title="' . htmlentities($traffic_totals['error']) . '">Calc Err</span>';
+			                                if ($rrd_traffic_data_full && is_array($rrd_traffic_data_full)) {
+			                                    // Extract only network-relevant data points
+			                                    $network_rrd_points = pvewhmcs_extract_network_rrd_data($rrd_traffic_data_full);
+
+			                                    if (empty($network_rrd_points)) {
+			                                        // If, after extraction, there are no points with netin/netout, it's effectively no data.
+			                                        $monthly_traffic_in = '<span style="color:orange;" title="No netin/netout data found in RRD output.">Data N/A</span>';
+			                                        $monthly_traffic_out = $monthly_traffic_in;
+			                                        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                                            logModuleCall('pvewhmcs_admin_list_vms_traffic', "Extracted RRD network points are empty for VMID {$vm->vmid}", $rrd_traffic_data_full, '');
+			                                        }
+			                                    } else {
+			                                        // Calculate totals from the extracted network RRD data array.
+			                                        $traffic_totals = pvewhmcs_calculate_monthly_traffic_from_rrd($network_rrd_points);
+			                                        if ($traffic_totals['error']) {
+			                                            // Display error from calculation (e.g., counter reset, no data)
+			                                            $monthly_traffic_in = '<span style="color:orange;" title="' . htmlentities($traffic_totals['error']) . '">Calc Err</span>';
+			                                            $monthly_traffic_out = $monthly_traffic_in;
+			                                            if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+			                                                logModuleCall('pvewhmcs_admin_list_vms_traffic', "RRD Traffic Calc Error VMID {$vm->vmid}: " . $traffic_totals['error'], $network_rrd_points, '');
+			                                            }
+			                                        } else {
+			                                            // Format calculated bytes into readable string (GB, TB etc.)
+			                                            $monthly_traffic_in = pvewhmcs_format_bytes($traffic_totals['in']);
+			                                            $monthly_traffic_out = pvewhmcs_format_bytes($traffic_totals['out']);
+			                                        }
+			                                    }
+			                                } else {
+			                                    // RRD data fetch failed or returned empty/invalid
+			                                    $monthly_traffic_in = '<span style="color:red;">RRD N/A</span>';
 			                                        $monthly_traffic_out = $monthly_traffic_in;
 			                                        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
 			                                            logModuleCall('pvewhmcs_admin_list_vms_traffic', "RRD Traffic Calc Error VMID {$vm->vmid}: " . $traffic_totals['error'], $rrd_traffic_data, '');

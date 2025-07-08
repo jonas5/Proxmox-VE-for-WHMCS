@@ -288,6 +288,12 @@ function pvewhmcs_output($vars) {
 			echo '<td>'.$vm->netrate . PHP_EOL .'</td>';
 			echo '<td>'.$vm->bw . PHP_EOL .'</td>';
 			echo '<td>'.$vm->ipv6 . PHP_EOL .'</td>';
+			if ($vm->vmtype == 'kvm') {
+				echo '<td>'.(strpos($vm->qemu_agent, "1") === 0 ? "Enabled (VirtIO)" : "Disabled") . PHP_EOL .'</td>';
+			} else {
+				echo '<td>N/A</td>';
+			}
+
 			echo '<td>
 			<a href="'.pvewhmcs_BASEURL.'&amp;tab=vmplans&amp;action=editplan&amp;id='.$vm->id.'&amp;vmtype='.$vm->vmtype.'"><img height="16" width="16" border="0" alt="Edit" src="images/edit.gif"></a>
 			<a href="'.pvewhmcs_BASEURL.'&amp;tab=vmplans&amp;action=removeplan&amp;id='.$vm->id.'" onclick="return confirm(\'Plan will be deleted, continue?\')"><img height="16" width="16" border="0" alt="Edit" src="images/delete.gif"></a>
@@ -412,8 +418,9 @@ function pvewhmcs_output($vars) {
 	    $vmid = isset($_GET['vmid']) ? $_GET['vmid'] : null;
 	    $node = isset($_GET['node']) ? $_GET['node'] : null; 
 	    $vtype = isset($_GET['vtype']) ? $_GET['vtype'] : null; 
+	    $userid = isset($_GET['userid']) ? (int)$_GET['userid'] : null;
 
-	    $action_params = ['vmid' => $vmid, 'node' => $node, 'vtype' => $vtype];
+	    $action_params = ['vmid' => $vmid, 'node' => $node, 'vtype' => $vtype, 'userid' => $userid];
 
 	    switch ($vm_action) {
 	        case 'admin_vm_start':
@@ -435,6 +442,14 @@ function pvewhmcs_output($vars) {
 	                pvewhmcs_list_vms_admin(); 
 	            }
 	            break;
+		case 'view_client_orders': // New case for client orders
+		    if (!empty($userid)) {
+		        pvewhmcs_view_client_orders_admin($action_params);
+		    } else {
+		        echo "<div class='alert alert-danger'>User ID not provided for viewing client orders.</div>";
+		        pvewhmcs_list_vms_admin(); // Fallback to VM list
+		    }
+		    break;
 	        default:
 	            pvewhmcs_list_vms_admin();
 	            break;
@@ -1793,6 +1808,7 @@ function pvewhmcs_list_vms_admin() {
 				'mvm.ipaddress as vm_main_ip',
 				'h.domainstatus as whmcs_service_status',
 				'h.server as server_id',
+				'h.userid as client_id', // Added client_id for linking
 				'p.name as product_name',
 				'c.firstname',
 				'c.lastname',
@@ -1977,6 +1993,11 @@ function pvewhmcs_list_vms_admin() {
 			if (!empty($vm->companyname)) {
 				$client_name .= ' (' . $vm->companyname . ')';
 			}
+
+			// Client Name and Links
+			//$client_display = "<a href='clientssummary.php?userid={$vm->client_id}'>{$client_name}</a><br>";
+//			$client_display .= "<a href='" . pvewhmcs_BASEURL . "&tab=vms&vm_action=view_client_orders&userid={$vm->client_id}' class='btn btn-xs btn-info' style='margin-top: 5px;'>{$client_name}</a>";
+			$client_display .= "<a href='" . pvewhmcs_BASEURL . "&tab=vms&vm_action=view_client_orders&userid={$vm->client_id}'>{$client_name}</a>";
 			
 			// Action buttons - URLs will be placeholders for now
 			$actions = '';
@@ -1996,7 +2017,7 @@ function pvewhmcs_list_vms_admin() {
 			echo "<tr>
 					<td>{$vm->vmid}</td>
 					<td>{$vm->product_name}</td>
-					<td><a href='clientssummary.php?userid={$h->userid}'>{$client_name}</a></td>
+					<td>{$client_display}</td>
 					<td>{$pve_status}</td>
 					<td>{$vm->whmcs_service_status}</td>
 					<td>{$vm->vm_main_ip}</td>
@@ -2050,6 +2071,9 @@ if (!function_exists('pvewhmcs_calculate_monthly_traffic_from_rrd')) {
         $current_month_start_timestamp = (new DateTime($current_time_utc->format("Y-m-01 00:00:00"), new DateTimeZone("UTC")))->getTimestamp();
         $next_month_start_timestamp = (new DateTime($current_time_utc->format("Y-m-01 00:00:00"), new DateTimeZone("UTC")))->modify('+1 month')->getTimestamp();
 
+
+//	echo sprintf(' -> %s / %s <br>', $current_month_start_timestamp, $next_month_start_timestamp);
+
         // Validate input RRD data
         if (empty($rrd_data_array) || !is_array($rrd_data_array)) {
             return ['in' => 0, 'out' => 0, 'error' => 'No RRD data provided or invalid format'];
@@ -2066,6 +2090,8 @@ if (!function_exists('pvewhmcs_calculate_monthly_traffic_from_rrd')) {
         // Iterate over each data point from RRD
         foreach ($rrd_data_array as $data_point) {
             $timestamp = isset($data_point['time']) ? intval($data_point['time']) : 0;
+
+//		echo sprintf(' -> %s / %s <br> ', $timestamp, date('Y-m-d H:i:s', $timestamp));
 
             // Filter data points to include only those within the current calendar month
             if ($timestamp < $current_month_start_timestamp || $timestamp >= $next_month_start_timestamp) {
@@ -2575,5 +2601,74 @@ jQuery(function($){
 		}
 	}
 	echo "<p><a href='".pvewhmcs_BASEURL."&tab=vms' class='btn btn-default'>&laquo; Back to VM List</a></p>";
+}
+
+// ADMIN ADDON: View Client Orders
+function pvewhmcs_view_client_orders_admin($params) {
+    $userid = isset($params['userid']) ? (int)$params['userid'] : 0;
+
+    if (empty($userid)) {
+        echo "<div class='alert alert-danger'>Error: User ID not provided.</div>";
+        echo "<p><a href='" . pvewhmcs_BASEURL . "&tab=vms' class='btn btn-default'>&laquo; Back to VM List</a></p>";
+        return;
+    }
+
+    try {
+        $client = Capsule::table('tblclients')->find($userid);
+        if (!$client) {
+            echo "<div class='alert alert-danger'>Error: Client with User ID {$userid} not found.</div>";
+            echo "<p><a href='" . pvewhmcs_BASEURL . "&tab=vms' class='btn btn-default'>&laquo; Back to VM List</a></p>";
+            return;
+        }
+
+        $client_name = trim($client->firstname . ' ' . $client->lastname);
+        if (!empty($client->companyname)) {
+            $client_name .= ' (' . $client->companyname . ')';
+        }
+
+        echo "<h3>Orders for Client: {$client_name} (User ID: {$userid})</h3>";
+
+        $orders = Capsule::table('tblorders')
+            ->where('userid', $userid)
+            ->orderBy('id', 'desc') // Show most recent orders first
+            ->get();
+
+        if (count($orders) == 0) {
+            echo "<p>No orders found for this client.</p>";
+        } else {
+            echo '<table class="datatable" width="100%">
+                    <thead>
+                        <tr>
+                            <th>Order ID</th>
+                            <th>Order Number</th>
+                            <th>Date</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>';
+
+            foreach ($orders as $order) {
+                $view_order_link = "orders.php?action=view&id={$order->id}";
+                echo "<tr>
+                        <td>{$order->id}</td>
+                        <td>{$order->ordernum}</td>
+                        <td>" . date('Y-m-d H:i:s', strtotime($order->date)) . "</td>
+                        <td>{$order->amount}</td>
+                        <td>{$order->status}</td>
+                        <td><a href='{$view_order_link}' class='btn btn-xs btn-primary' target='_blank'>View Order</a></td>
+                      </tr>";
+            }
+            echo '</tbody></table>';
+        }
+
+    } catch (Exception $e) {
+        echo "<div class='alert alert-danger'>An error occurred while fetching client orders: " . htmlentities($e->getMessage()) . "</div>";
+        if (Capsule::table('mod_pvewhmcs')->where('id', '1')->value('debug_mode') == 1) {
+            logModuleCall('pvewhmcs_client_orders', "General Error for UserID {$userid}", $e->getMessage(), $e->getTraceAsString());
+        }
+    }
+    echo "<p><a href='" . pvewhmcs_BASEURL . "&tab=vms' class='btn btn-default'>&laquo; Back to VM List</a></p>";
 }
 
